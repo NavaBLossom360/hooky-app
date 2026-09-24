@@ -7,3 +7,6 @@ www/
 node_modules/
 ios/
 android/
+
+# Local secret values, never committed.
+.secrets/

@@ -1,0 +1,276 @@
+-- Hooky schema for Supabase (Postgres 15+).
+-- Every safety rule the client enforces is enforced again here, because the
+-- client can be modified by anyone. Apply with the Supabase SQL editor or CLI.
+
+create extension if not exists pgcrypto;
+
+-- ---------- enums ----------
+create type age_bracket as enum ('13-15', '16-17', '18-20', '21+');
+create type swipe_dir as enum ('like', 'nope');
+create type verification_status as enum ('none', 'pending', 'estimated', 'verified', 'failed');
+
+-- ---------- helpers ----------
+create or replace function bracket_for(birthdate date) returns age_bracket
+language sql immutable as $$
+  select case
+    when extract(year from age(birthdate)) < 13 then null
+    when extract(year from age(birthdate)) <= 15 then '13-15'::age_bracket
+    when extract(year from age(birthdate)) <= 17 then '16-17'::age_bracket
+    when extract(year from age(birthdate)) <= 20 then '18-20'::age_bracket
+    else '21+'::age_bracket end
+$$;
+
+-- ---------- tables ----------
+create table profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  display_name text not null check (char_length(display_name) between 2 and 20),
+  birthdate date not null,
+  bracket age_bracket generated always as (bracket_for(birthdate)) stored,
+  emoji text,
+  photo_url text,
+  region text check (char_length(region) <= 30),
+  bio text check (char_length(bio) <= 140),
+  interests text[] default '{}',
+  verification verification_status not null default 'none',
+  verification_status text generated always as (verification::text) stored,
+  premium_until timestamptz,
+  banned_at timestamptz,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  constraint min_age check (bracket_for(birthdate) is not null)
+);
+-- Birthdate is write-once. Nobody gets to age themselves into a different group.
+create or replace function lock_birthdate() returns trigger language plpgsql as $$
+begin
+  if new.birthdate <> old.birthdate then raise exception 'birthdate cannot be changed'; end if;
+  new.updated_at := now();
+  return new;
+end $$;
+create trigger profiles_lock before update on profiles for each row execute function lock_birthdate();
+
+create table swipes (
+  swiper_id uuid references profiles(id) on delete cascade,
+  target_id uuid references profiles(id) on delete cascade,
+  dir swipe_dir not null,
+  created_at timestamptz default now(),
+  primary key (swiper_id, target_id)
+);
+create index swipes_target on swipes(target_id) where dir = 'like';
+
+create table matches (
+  id uuid primary key default gen_random_uuid(),
+  a uuid references profiles(id) on delete cascade,
+  b uuid references profiles(id) on delete cascade,
+  created_at timestamptz default now(),
+  unique (a, b),
+  check (a < b)
+);
+
+create table messages (
+  id uuid primary key default gen_random_uuid(),
+  match_id uuid references matches(id) on delete cascade,
+  sender_id uuid references profiles(id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 500),
+  created_at timestamptz default now()
+);
+create index messages_match on messages(match_id, created_at);
+
+create table reads (
+  match_id uuid references matches(id) on delete cascade,
+  user_id uuid references profiles(id) on delete cascade,
+  last_read_at timestamptz default now(),
+  primary key (match_id, user_id)
+);
+
+create table blocks (
+  blocker_id uuid references profiles(id) on delete cascade default auth.uid(),
+  blocked_id uuid references profiles(id) on delete cascade,
+  created_at timestamptz default now(),
+  primary key (blocker_id, blocked_id)
+);
+
+create table reports (
+  id uuid primary key default gen_random_uuid(),
+  reporter_id uuid references profiles(id) on delete set null default auth.uid(),
+  reported_id uuid references profiles(id) on delete cascade,
+  reason text not null,
+  details text,
+  status text default 'open',
+  created_at timestamptz default now()
+);
+
+-- Written by the payment webhook (App Store / Play / Stripe), never by clients.
+create table subscriptions (
+  user_id uuid references profiles(id) on delete cascade,
+  provider text not null,
+  provider_ref text not null,
+  plan text not null,
+  active boolean default true,
+  expires_at timestamptz,
+  primary key (provider, provider_ref)
+);
+
+-- ---------- row level security ----------
+alter table profiles enable row level security;
+alter table swipes enable row level security;
+alter table matches enable row level security;
+alter table messages enable row level security;
+alter table reads enable row level security;
+alter table blocks enable row level security;
+alter table reports enable row level security;
+alter table subscriptions enable row level security;
+
+create or replace function my_bracket() returns age_bracket language sql stable security definer as $$
+  select bracket from profiles where id = auth.uid()
+$$;
+create or replace function is_blocked_either_way(other uuid) returns boolean language sql stable security definer as $$
+  select exists (select 1 from blocks where (blocker_id = auth.uid() and blocked_id = other) or (blocker_id = other and blocked_id = auth.uid()))
+$$;
+
+-- Profiles: you can read yourself, and anyone in your own bracket who is not banned and not blocked.
+create policy profiles_self on profiles for all using (id = auth.uid()) with check (id = auth.uid());
+create policy profiles_same_bracket on profiles for select using (
+  bracket = my_bracket() and banned_at is null and not is_blocked_either_way(id)
+);
+
+create policy swipes_own on swipes for all using (swiper_id = auth.uid()) with check (swiper_id = auth.uid());
+create policy matches_mine on matches for select using (a = auth.uid() or b = auth.uid());
+create policy messages_in_my_matches on messages for select using (
+  exists (select 1 from matches m where m.id = match_id and (m.a = auth.uid() or m.b = auth.uid()))
+);
+create policy reads_own on reads for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy blocks_own on blocks for all using (blocker_id = auth.uid()) with check (blocker_id = auth.uid());
+create policy reports_insert on reports for insert with check (reporter_id = auth.uid());
+create policy subs_read on subscriptions for select using (user_id = auth.uid());
+
+-- ---------- RPCs (security definer, so all checks live here) ----------
+create or replace function is_premium(uid uuid default auth.uid()) returns boolean language sql stable security definer as $$
+  select coalesce((select premium_until > now() from profiles where id = uid), false)
+$$;
+
+create or replace function discover_candidates(lim int default 20)
+returns table (id uuid, display_name text, age int, emoji text, region text, bio text, interests text[], photo_url text)
+language sql stable security definer as $$
+  select p.id, p.display_name, extract(year from age(p.birthdate))::int, p.emoji, p.region, p.bio, p.interests, p.photo_url
+  from profiles p
+  where p.id <> auth.uid()
+    and p.bracket = my_bracket()
+    and p.banned_at is null
+    and p.verification in ('estimated', 'verified')
+    and not is_blocked_either_way(p.id)
+    and not exists (select 1 from swipes s where s.swiper_id = auth.uid() and s.target_id = p.id)
+  order by (exists (select 1 from swipes s where s.swiper_id = p.id and s.target_id = auth.uid() and s.dir = 'like')) desc, random()
+  limit lim
+$$;
+
+create or replace function likes_remaining() returns int language sql stable security definer as $$
+  select case when is_premium() then -1
+    else greatest(0, 25 - (select count(*) from swipes where swiper_id = auth.uid() and dir = 'like' and created_at > now() - interval '24 hours'))::int end
+$$;
+
+create or replace function swipe(target uuid, direction swipe_dir) returns uuid
+language plpgsql security definer as $$
+declare me uuid := auth.uid(); mid uuid; lo uuid; hi uuid;
+begin
+  if me is null or target = me then raise exception 'invalid'; end if;
+  if (select bracket from profiles where id = target) is distinct from my_bracket() then raise exception 'not in your age group'; end if;
+  if is_blocked_either_way(target) then raise exception 'blocked'; end if;
+  if direction = 'like' and likes_remaining() = 0 then raise exception 'daily like limit reached'; end if;
+  insert into swipes (swiper_id, target_id, dir) values (me, target, direction)
+    on conflict (swiper_id, target_id) do update set dir = excluded.dir, created_at = now();
+  if direction = 'like' and exists (select 1 from swipes where swiper_id = target and target_id = me and dir = 'like') then
+    lo := least(me, target); hi := greatest(me, target);
+    insert into matches (a, b) values (lo, hi) on conflict (a, b) do update set a = excluded.a returning id into mid;
+    return mid;
+  end if;
+  return null;
+end $$;
+
+create or replace function undo_swipe(target uuid) returns void language plpgsql security definer as $$
+begin
+  if not is_premium() then raise exception 'premium required'; end if;
+  delete from swipes where swiper_id = auth.uid() and target_id = target;
+  delete from matches where (a = least(auth.uid(), target) and b = greatest(auth.uid(), target));
+end $$;
+
+create or replace function who_liked_me()
+returns table (id uuid, display_name text, age int, emoji text, region text, bio text, interests text[], photo_url text)
+language sql stable security definer as $$
+  select p.id, p.display_name, extract(year from age(p.birthdate))::int, p.emoji, p.region, p.bio, p.interests, p.photo_url
+  from swipes s join profiles p on p.id = s.swiper_id
+  where s.target_id = auth.uid() and s.dir = 'like' and p.bracket = my_bracket() and p.banned_at is null
+    and not is_blocked_either_way(p.id)
+    and not exists (select 1 from swipes x where x.swiper_id = auth.uid() and x.target_id = p.id)
+$$;
+
+create or replace function my_matches()
+returns table (match_id uuid, other_id uuid, created_at timestamptz, display_name text, age int, emoji text, region text, bio text, interests text[], photo_url text, last_text text, last_at timestamptz, last_from text, unread int)
+language sql stable security definer as $$
+  select m.id, p.id, m.created_at, p.display_name, extract(year from age(p.birthdate))::int, p.emoji, p.region, p.bio, p.interests, p.photo_url,
+    lm.body, lm.created_at, case when lm.sender_id = auth.uid() then 'me' else 'them' end,
+    (select count(*) from messages x where x.match_id = m.id and x.sender_id <> auth.uid()
+       and x.created_at > coalesce((select last_read_at from reads r where r.match_id = m.id and r.user_id = auth.uid()), 'epoch'))::int
+  from matches m
+  join profiles p on p.id = case when m.a = auth.uid() then m.b else m.a end
+  left join lateral (select body, created_at, sender_id from messages where match_id = m.id order by created_at desc limit 1) lm on true
+  where (m.a = auth.uid() or m.b = auth.uid()) and not is_blocked_either_way(p.id) and p.banned_at is null
+  order by coalesce(lm.created_at, m.created_at) desc
+$$;
+
+-- Off-platform detection, mirrored from safety.js. Strict for any chat involving a minor.
+create or replace function message_violation(body text) returns text language sql immutable as $$
+  select case
+    when body ~ '(\+?\d[\d\s().-]{7,}\d)' then 'phone numbers'
+    when body ~* '(^|\s)@[a-z0-9_.]{3,}' then 'social handles'
+    when body ~* '\m(snap(chat)?|insta(gram)?|ig|tiktok|kik|discord|telegram|whatsapp|wickr|omegle)\M' then 'other apps'
+    when body ~* '(https?://|www\.|\.com\M|\.gg\M|\.me\M)' then 'links'
+    when body ~* '\m(my address|come over|meet (me )?(up|irl|in person)|where do you live|home alone|send (me )?(a )?(pic|pics|nudes?))\M' then 'unsafe requests'
+    else null end
+$$;
+
+create or replace function send_message(mid uuid, body text) returns uuid language plpgsql security definer as $$
+declare me uuid := auth.uid(); other uuid; v text; strict boolean; new_id uuid;
+begin
+  select case when a = me then b else a end into other from matches where id = mid and (a = me or b = me);
+  if other is null then raise exception 'not your match'; end if;
+  if is_blocked_either_way(other) then raise exception 'blocked'; end if;
+  strict := (select bracket in ('13-15', '16-17') from profiles where id = me) or (select bracket in ('13-15', '16-17') from profiles where id = other);
+  v := message_violation(body);
+  if strict and v is not null then raise exception 'blocked: %', v; end if;
+  insert into messages (match_id, sender_id, body) values (mid, me, body) returning id into new_id;
+  return new_id;
+end $$;
+
+create or replace function mark_read(mid uuid) returns void language sql security definer as $$
+  insert into reads (match_id, user_id, last_read_at) values (mid, auth.uid(), now())
+  on conflict (match_id, user_id) do update set last_read_at = now()
+$$;
+
+create or replace function total_unread() returns int language sql stable security definer as $$
+  select coalesce(sum(unread), 0)::int from my_matches()
+$$;
+
+create or replace function my_blocked()
+returns table (id uuid, display_name text, age int, emoji text, region text, bio text, interests text[], photo_url text)
+language sql stable security definer as $$
+  select p.id, p.display_name, extract(year from age(p.birthdate))::int, p.emoji, p.region, p.bio, p.interests, p.photo_url
+  from blocks b join profiles p on p.id = b.blocked_id where b.blocker_id = auth.uid()
+$$;
+
+create or replace function delete_my_account() returns void language sql security definer as $$
+  delete from auth.users where id = auth.uid()
+$$;
+
+-- Realtime for chat
+alter publication supabase_realtime add table messages;
+
+-- ---------- moderation notes ----------
+-- * Photo uploads should go through an edge function that runs a nudity/CSAM
+--   classifier (e.g. Hive, AWS Rekognition, PhotoDNA via NCMEC) before the
+--   photo_url is written. Never accept a client-supplied photo_url directly.
+-- * Age estimation (verification = 'estimated'/'verified') is set by an edge
+--   function after a Yoti or similar check. Unverified users never appear in
+--   discover_candidates (see above).
+-- * Reports with reason involving safety should page a human. Three open
+--   reports auto-set banned_at pending review.
+-- * premium_until is only written by the payments webhook.

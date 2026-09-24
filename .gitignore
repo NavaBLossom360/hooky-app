@@ -1,0 +1,8 @@
+# Real backend keys live here; never commit them.
+config.js
+
+# Native wrapper output and dependencies
+www/
+node_modules/
+ios/
+android/

@@ -1,0 +1,25 @@
+{
+  "appId": "com.yourcompany.hooky",
+  "appName": "Hooky",
+  "webDir": "www",
+  "backgroundColor": "#0f0b1e",
+  "ios": {
+    "contentInset": "always",
+    "backgroundColor": "#0f0b1e"
+  },
+  "android": {
+    "backgroundColor": "#0f0b1e",
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": true,
+      "backgroundColor": "#0f0b1e",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#0f0b1e"
+    }
+  }
+}

@@ -1,5 +1,6 @@
-# Real backend keys live here; never commit them.
-config.js
+# config.js holds ONLY the Supabase publishable (anon) key, which is safe in
+# public client code and is required by the deployed GitHub Pages site, so it is
+# committed on purpose. Never put a service_role or secret key in it.
 
 # Native wrapper output and dependencies
 www/

@@ -17,11 +17,10 @@ There is no build step. Open `index.html` in a browser, or serve the folder with
 any static server. With no `config.js` present the app runs in **demo mode**:
 sixteen fake users, everything stored in `localStorage`, fake chat replies.
 
-To connect a real backend:
-
-1. Create a Supabase project and run `supabase/schema.sql` in the SQL editor.
-2. Turn on Email OTP under Authentication.
-3. Copy `config.example.js` to `config.js` and fill in the URL and anon key.
+To connect a real backend, follow **[SETUP.md](SETUP.md)**. In short: create a
+free Supabase project, run `supabase/schema.sql` in the SQL editor, enable email
+OTP, and copy `config.example.js` to `config.js` with your project URL and
+publishable key.
 
 ## What's in the box
 

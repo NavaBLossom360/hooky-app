@@ -212,12 +212,15 @@
       if (!this.uid) return null;
       const { data } = await this.sb.from("profiles").select("*").eq("id", this.uid).maybeSingle();
       if (!data) return null;
-      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, premium: data.premium_until && new Date(data.premium_until) > new Date(), verification: data.verification_status });
+      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, premium: data.premium_until && new Date(data.premium_until) > new Date(), verification: data.verification && data.verification !== "none" ? data.verification : null });
     }
     async saveMe(p) {
       const row = { id: this.uid, display_name: p.name, birthdate: p.birthdate, emoji: p.emoji, region: p.region, bio: p.bio, interests: p.tags, photo_url: p.photo || null };
       const { error } = await this.sb.from("profiles").upsert(row);
       if (error) throw error;
+      // The server decides verification; the client can only say the check ran.
+      // Replace complete_age_check with a real vendor callback before launch.
+      if (p.verification) await this.sb.rpc("complete_age_check");
       return this.getMe();
     }
     async setPremium() { throw new Error("Hooky+ is granted server-side after a store purchase webhook."); }

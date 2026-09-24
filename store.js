@@ -181,6 +181,7 @@
   class SupabaseStore {
     constructor(cfg) { this.kind = "supabase"; this.cfg = cfg; this.listeners = new Set(); this.callListeners = new Set(); this.online = new Set(); }
     async init() {
+      if (this.sb) return true; // idempotent: boot() runs again after sign-in
       this.sb = window.supabase.createClient(this.cfg.supabaseUrl, this.cfg.supabaseAnonKey);
       const { data } = await this.sb.auth.getSession();
       this.session = data.session;
@@ -204,7 +205,14 @@
     onlineIds() { return this.online; }
     isOnline(id) { return this.online.has(id); }
 
-    async sendCode(email) { const { error } = await this.sb.auth.signInWithOtp({ email }); if (error) throw error; }
+    // Sign-in is a magic link. Supabase's built-in email sender only supports
+    // the default template, which carries a link rather than a numeric code;
+    // sending a code instead would require configuring custom SMTP.
+    async sendCode(email) {
+      const redirect = location.origin + location.pathname;
+      const { error } = await this.sb.auth.signInWithOtp({ email, options: { emailRedirectTo: redirect } });
+      if (error) throw error;
+    }
     async verifyCode(email, token) { const { error } = await this.sb.auth.verifyOtp({ email, token, type: "email" }); if (error) throw error; }
     async signOut() { await this.sb.auth.signOut(); }
 

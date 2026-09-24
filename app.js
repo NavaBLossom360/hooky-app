@@ -54,6 +54,16 @@
   }
   if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
 
+  // Returning from a magic link signs the session in asynchronously, so redraw
+  // the moment that flips instead of leaving the sign-in screen up.
+  if (store.kind === "supabase") {
+    let signedIn = !!store.uid;
+    store.onChange(() => {
+      const now = !!store.uid;
+      if (now !== signedIn) { signedIn = now; boot(); }
+    });
+  }
+
   // Incoming live calls.
   store.subscribeCalls(async (p) => {
     if (p.type !== "ring" || state.inCall) return;
@@ -103,20 +113,39 @@
     screen.innerHTML = `<div class="pad stack" style="justify-content:center;flex:1">
       <img class="wordmark" src="assets/wordmark.png" alt="hooky">
       <h2>Sign in</h2>
-      <p class="muted">We email you a 6-digit code. No passwords.</p>
-      <div class="field"><label>Email</label><input id="email" class="input" type="email" placeholder="you@example.com"></div>
-      <div id="codeWrap" class="field hidden"><label>Code</label><input id="code" class="input" inputmode="numeric" placeholder="123456"></div>
+      <p class="muted">We email you a sign-in link. No passwords to remember.</p>
+      <div class="field"><label>Email</label><input id="email" class="input" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"></div>
       <div id="err" class="error"></div>
-      <button id="go" class="btn primary">Send code</button>
+      <button id="go" class="btn primary">Email me a link</button>
+      <p class="tiny muted center">By continuing you agree to the <a href="legal.html#terms" target="_blank">Terms</a> and <a href="legal.html#privacy" target="_blank">Privacy Policy</a>.</p>
     </div>`;
-    let sent = false;
     $("#go").onclick = async () => {
       const email = $("#email").value.trim();
+      const err = $("#err"); err.textContent = "";
+      if (!/^\S+@\S+\.\S+$/.test(email)) return (err.textContent = "Enter a valid email address.");
+      $("#go").disabled = true; $("#go").textContent = "Sending…";
       try {
-        if (!sent) { await store.sendCode(email); sent = true; $("#codeWrap").classList.remove("hidden"); $("#go").textContent = "Verify"; toast("Code sent"); }
-        else { await store.verifyCode(email, $("#code").value.trim()); await boot(); }
-      } catch (e) { $("#err").textContent = e.message; }
+        await store.sendCode(email);
+        renderCheckEmail(email);
+      } catch (e) {
+        $("#go").disabled = false; $("#go").textContent = "Email me a link";
+        err.textContent = /rate|limit|seconds/i.test(e.message)
+          ? "Too many sign-in emails for now. Wait a few minutes and try again."
+          : e.message;
+      }
     };
+  }
+
+  function renderCheckEmail(email) {
+    setTabsVisible(false);
+    screen.innerHTML = `<div class="pad stack center" style="justify-content:center;flex:1">
+      <div style="font-size:64px">📬</div>
+      <h2>Check your email</h2>
+      <p class="muted">We sent a sign-in link to <b>${esc(email)}</b>. Open it on this device and you'll land straight back in Hooky.</p>
+      <div class="notice">The link works once and expires shortly. If it hasn't arrived in a minute, check your spam folder.</div>
+      <button id="again" class="btn ghost">Use a different email</button>
+    </div>`;
+    $("#again").onclick = renderAuth;
   }
 
   // ---------- welcome + onboarding ----------
@@ -184,7 +213,11 @@
         if (age == null) return info.classList.add("hidden");
         info.classList.remove("hidden");
         if (age < S.MIN_AGE) { info.className = "notice warn"; info.textContent = "Hooky is for people 13 and up."; return; }
-        const b = S.bracketForAge(age); info.className = "notice"; info.textContent = `You'll be in the ${b.label} group. You'll only see and be seen by people in that group.`;
+        const b = S.bracketForAge(age);
+
+        if (!b) { info.className = "notice warn"; info.textContent = "That birthday doesn't look right."; return; }
+
+        info.className = "notice"; info.textContent = `You'll be in the ${b.label} group. You'll only see and be seen by people in that group.`;
       };
       $("#bday").oninput = upd; upd();
     }

@@ -45,6 +45,25 @@
     return age;
   }
 
+  // Face age check tolerance. A claimed age must fall between
+  // estimate - BELOW and estimate + ABOVE. Wide on purpose: face models are
+  // several years out for teenagers, and a false rejection locks a real teen
+  // out of their own account. Mirrored by age_check_fits() in schema.sql.
+  const AGE_CHECK = { BELOW: 10, ABOVE: 8 };
+  function ageFitsEstimate(claimed, estimate) {
+    return claimed != null && estimate != null &&
+      claimed >= estimate - AGE_CHECK.BELOW && claimed <= estimate + AGE_CHECK.ABOVE;
+  }
+  // Could anyone this face plausibly be, inside 13 to 25, pass the check?
+  function estimateAllowsSignup(estimate) {
+    return estimate - AGE_CHECK.BELOW <= MAX_AGE && estimate + AGE_CHECK.ABOVE >= MIN_AGE;
+  }
+  // A friendly range to show people, rather than one over-precise number.
+  function estimateLabel(estimate) {
+    const e = Math.round(estimate);
+    return `${Math.max(10, e - 3)}–${e + 3}`;
+  }
+
   const GENDERS = [
     { id: "woman", label: "Woman" },
     { id: "man", label: "Man" },
@@ -85,10 +104,10 @@
       id: "plus", name: "Hooky+", blurb: "Unlimited hooks and your own room.",
       rooms: 1,
       perks: [
-        ["♾️", "Unlimited hooks", "Free accounts get 25 a day."],
-        ["👀", "See who hooked you", "Catch them instantly instead of waiting."],
-        ["↶", "Undo a pass", "Swiped too fast? Bring them back."],
-        ["🏠", "One private room", "Start a room on any topic you like."],
+        ["zap", "Unlimited hooks", "Free accounts get 25 a day."],
+        ["eyes", "See who hooked you", "Catch them instantly instead of waiting."],
+        ["dizzy", "Undo a pass", "Swiped too fast? Bring them back."],
+        ["couch", "One private room", "Start a room on any topic you like."],
       ],
       price: { month: { teen: 2.99, adult: 4.99 }, quarter: { teen: 7.99, adult: 12.99 }, year: { teen: 19.99, adult: 29.99 } },
     },
@@ -96,10 +115,10 @@
       id: "max", name: "Hooky Max", blurb: "Everything, plus more rooms and reach.",
       rooms: 5,
       perks: [
-        ["⭐", "Everything in Hooky+", "All of the above, included."],
-        ["🏠", "Five private rooms", "Run a room per topic, not just one."],
-        ["🚀", "Priority in the deck", "Your profile gets shown first."],
-        ["🎨", "Profile flair", "Animated borders and more emoji."],
+        ["star", "Everything in Hooky+", "All of the above, included."],
+        ["house", "Five private rooms", "Run a room per topic, not just one."],
+        ["rocket", "Priority in the deck", "Your profile gets shown first."],
+        ["palette", "Profile flair", "Animated borders and more emoji."],
       ],
       price: { month: { teen: 5.99, adult: 9.99 }, quarter: { teen: 14.99, adult: 24.99 }, year: { teen: 39.99, adult: 59.99 } },
     },
@@ -120,8 +139,8 @@
   }
 
   window.HookySafety = {
-    MIN_AGE, MAX_AGE, GENDERS, TIERS, PERIODS, REPORT_REASONS,
+    MIN_AGE, MAX_AGE, GENDERS, TIERS, PERIODS, REPORT_REASONS, AGE_CHECK,
     ageFromBirthdate, visibleRange, ageBand, canSee, isMinor, checkMessage,
-    priceFor, roomsAllowed,
+    priceFor, roomsAllowed, ageFitsEstimate, estimateAllowsSignup, estimateLabel,
   };
 })();

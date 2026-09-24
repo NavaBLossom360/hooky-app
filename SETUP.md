@@ -13,16 +13,25 @@ are for reference and for anyone rebuilding it from scratch.
 | Config in this repo | `config.js` (publishable key only) |
 | Live app | https://navablossom360.github.io/hooky-app/ |
 
-The database schema in `supabase/schema.sql` is applied: 8 tables, Row Level
-Security enabled on every one of them, 9 policies, and 21 functions that enforce
-age brackets, like limits, and message filtering on the server.
+The database schema in `supabase/schema.sql` is applied: 13 tables, Row Level
+Security enabled on every one of them, 13 policies, and 35 functions that
+enforce age windows, the signup age check, like limits and message filtering on
+the server. Every SECURITY DEFINER function is callable by signed-in users only.
 
 ## Sign-in
 
-Sign-in is a **magic link**, not a numeric code. Supabase's built-in email
-sender only sends its default template, which contains a link, and editing the
-template to include a code requires configuring custom SMTP first. The app emails
-a link, the link returns to the app, and the session is picked up automatically.
+Accounts are **email and password**. Sign-up sends one confirmation email;
+after that, logging in needs no email at all, which matters because the
+built-in sender only allows a few emails an hour. Opening the confirmation
+link on the same phone lands back in the app already logged in; otherwise the
+person logs in by hand. "Forgot your password?" sends a reset link, and the app
+asks for a new password when that link opens it.
+
+The app handles either setting of **Authentication → Providers → Email →
+Confirm email**: with it on (the default) it shows "Check your inbox", with it
+off it goes straight to profile setup. Keep it on. Worth turning on too, under
+Authentication → Password security: a minimum length of 8 (the app already
+asks for 8) and leaked password protection, which the security advisor flags.
 
 Auth configuration already applied:
 
@@ -85,6 +94,10 @@ skips blocked pairs, and deletes subscriptions the browser has thrown away
 Secrets it needs, under **Edge Functions -> Secrets**: `VAPID_PUBLIC_KEY`,
 `VAPID_PRIVATE_JWK`, `VAPID_SUBJECT` and `APP_URL`. The public key also ships
 in `config.js`, which is fine; it is public by design.
+
+Status: the function and the `push_subscriptions` table are deployed. Until
+the four secrets are added, the function answers `503 push is not configured`
+and the app carries on without notifications.
 
 ## Age range
 
@@ -174,9 +187,46 @@ an identical result.
 
 ## Age verification
 
-The `age-check` Edge Function is deployed and is the only thing that can write
-`profiles.verification`. The client-callable RPC that used to set it has been
-dropped, so a modified client can no longer mark itself verified. Verified
+### At signup, on the device
+
+The app's age check runs in the browser before an account exists
+(`agecheck.js`, engine in `vendor/face-api/`). No frame is uploaded. The
+result, an estimated age, is saved in the new account's auth metadata as
+`age_check`, and the database does the rest:
+
+- `profiles_guard` refuses to create a profile without an `age_check`, and
+  refuses a birthday outside 10 years below or 8 above the estimate
+  (`age_check_fits`). A profile that passes is marked `verification =
+  'estimated'`, `verification_provider = 'on-device'`.
+- `claim_age_check()` applies a fresh check to a profile made before the check
+  existed. It never downgrades a checked profile.
+- `signup_age_check()` returns only the caller's own value.
+
+Verified against the live database with temporary accounts, all removed
+afterwards:
+
+| Case | Result |
+| --- | --- |
+| Birthday fits the estimate | Profile created, `estimated / on-device` |
+| No age check on the account | Refused: `age check required` |
+| Looks 35, claims 16 | Refused: `birthday does not match age check` |
+| Looks 14, claims 23 | Refused |
+| Looks 35, claims 25, or looks 14, claims 15 | Allowed |
+| Settings save by an existing user (an upsert) | Works |
+| Client tries to set `verification` or the estimate fields | Ignored |
+| Old profile claims with a fitting scan / a mismatched one / no scan | Upgraded / refused / refused |
+| Signed-out caller runs any RPC | `permission denied` |
+
+**Trade-off, chosen deliberately:** keeping the face on the device means the
+server trusts the estimate the phone reports, so a modified app could forge
+it. That is why these profiles are labelled `on-device`: anything stronger
+(the function below, or an ID check) can overwrite the verdict later.
+
+### Optional: server-side re-check
+
+The `age-check` Edge Function is still deployed but the app no longer calls
+it, because it receives camera frames. It can overwrite `profiles.verification`
+with a server-side verdict if you ever add a stronger check. Verified
 behaviour:
 
 | Caller | Result |
@@ -185,7 +235,7 @@ behaviour:
 | Publishable key alone | 401, not signed in |
 | Signed-in user | Runs the check; the server writes the verdict |
 
-The app sends several camera frames. The function picks a provider from the
+It takes several camera frames. The function picks a provider from the
 `AGE_PROVIDER` secret and records which one decided in
 `profiles.verification_provider`:
 

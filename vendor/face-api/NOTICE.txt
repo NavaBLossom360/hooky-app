@@ -1,0 +1,12 @@
+face-api 1.7.12 by Vladimir Mandic (https://github.com/vladmandic/face-api),
+MIT licensed, bundling TensorFlow.js (Apache 2.0). The models in models/ are
+the face-api.js pretrained weights (MIT). These are the same files the go.cam
+open source age verification project ships for its on-device selfie age
+estimation (https://github.com/Godotcam/goCamOpenSource).
+
+Only three models are included, the ones Hooky's signup age check needs:
+  tiny_face_detector   finds the face
+  age_gender           estimates age (gender output is ignored)
+  face_expression      the smile / straight-face liveness challenge
+
+All three run inside the browser. Hooky never uploads camera frames.

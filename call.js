@@ -3,6 +3,7 @@
 // Real mode uses WebRTC with signaling over the store's call channel.
 (function () {
   const ICE = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+  const E = window.HookyEmoji;
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   // mode is "video" or "voice". A voice call asks for no camera at all, which
@@ -14,7 +15,7 @@
     root.innerHTML = `
       <div class="call-remote" id="remote">
         <div class="call-placeholder" style="background:${other.gradient}">
-          ${other.photo ? `<img src="${esc(other.photo)}" alt="">` : `<span>${esc(other.emoji || "🙂")}</span>`}
+          ${other.photo ? `<img src="${esc(other.photo)}" alt="">` : E.char(other.emoji || "😎", 180)}
         </div>
         <video id="remoteVideo" autoplay playsinline class="hidden"></video>
         <audio id="remoteAudio" autoplay class="hidden"></audio>
@@ -28,10 +29,10 @@
         ? "Voice only · keep it appropriate · hang up any time"
         : "Face on · keep it appropriate · hang up any time"}</div>
       <div class="call-controls">
-        <button class="cbtn" id="mute" title="Mute">🎤</button>
-        ${voice ? "" : `<button class="cbtn" id="cam" title="Camera">📷</button>`}
-        <button class="cbtn end" id="end" title="End">✕</button>
-        <button class="cbtn" id="report" title="Report">⚑</button>
+        <button class="cbtn" id="mute" title="Mute">${E.emo("mic", 30)}</button>
+        ${voice ? "" : `<button class="cbtn" id="cam" title="Camera">${E.emo("camera", 30)}</button>`}
+        <button class="cbtn end" id="end" title="End"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        <button class="cbtn" id="report" title="Report">${E.emo("flag", 30)}</button>
       </div>`;
     document.getElementById("app").appendChild(root);
 

@@ -10,3 +10,6 @@ android/
 
 # Local secret values, never committed.
 .secrets/
+
+# Reference screenshots from another app, kept locally for design research only.
+Yubo interface examples/

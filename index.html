@@ -3,28 +3,31 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-  <meta name="theme-color" content="#0f0b1e" />
+  <meta name="theme-color" content="#0b0a10" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Hooky" />
+  <meta name="description" content="Catch your people. Swipe, match, and go live with friends your age." />
   <title>Hooky</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="assets/icon-192.png" type="image/png" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="assets/icon-180.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,700..800&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div id="app" class="phone">
-    <div id="splash" class="splash"><img class="splash-icon" src="assets/icon-192.png" alt="" width="96" height="96"><img class="wordmark" src="assets/wordmark.png" alt="hooky"></div>
+    <div id="splash" class="splash"><img class="splash-icon" src="assets/icon-192.png" alt="" width="104" height="104"><img class="wordmark" src="assets/wordmark.png" alt="hooky"></div>
     <main id="screen" class="screen"></main>
     <nav id="tabs" class="tabs hidden">
-      <button data-tab="discover" class="tab active"><span class="tab-ico">🎣</span>Catch</button>
-      <button data-tab="matches" class="tab"><span class="tab-ico">💬</span>Chats<span id="unread" class="badge hidden"></span></button>
-      <button data-tab="profile" class="tab"><span class="tab-ico">🙂</span>Me</button>
+      <button data-tab="discover" class="tab active"><img class="emo" src="assets/emoji/fishing-pole.webp" alt="">Catch</button>
+      <button data-tab="matches" class="tab"><img class="emo" src="assets/emoji/speech.webp" alt="">Chats<span id="unread" class="badge hidden"></span></button>
+      <button data-tab="rooms" class="tab"><img class="emo" src="assets/emoji/couch.webp" alt="">Rooms</button>
+      <button data-tab="profile" class="tab"><img class="emo" src="assets/emoji/sunglasses.webp" alt="" id="meTabIcon">Me</button>
     </nav>
     <div id="modal-root"></div>
     <div id="toast" class="toast hidden"></div>
@@ -34,7 +37,9 @@
   <script src="config.js" onerror="void 0"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js" defer></script>
   <script src="safety.js"></script>
+  <script src="emoji.js"></script>
   <script src="store.js"></script>
+  <script src="agecheck.js"></script>
   <script src="call.js"></script>
   <script src="app.js" defer></script>
 </body>

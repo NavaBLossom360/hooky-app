@@ -75,6 +75,25 @@ alter table profiles add column if not exists age_estimate_high int;
 alter table profiles add column if not exists premium_tier text check (premium_tier in ('plus', 'max'));
 alter table profiles add column if not exists photo_status text not null default 'none' check (photo_status in ('none', 'pending', 'approved', 'rejected'));
 
+-- The face age check runs on the person's own device before they can sign up
+-- (agecheck.js); no image ever reaches the server. The result, an estimated
+-- age, is attached to the account as auth user metadata at signup. This reads
+-- it back. SECURITY DEFINER because the app's role cannot read auth.users,
+-- and it only ever returns the caller's own value.
+drop function if exists signup_age_check(uuid);
+create or replace function signup_age_check() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select raw_user_meta_data -> 'age_check' from auth.users where id = auth.uid()
+$$;
+
+-- How far a claimed age may sit from the face estimate. Wide on purpose: face
+-- models are off by several years for teenagers, and a false rejection locks a
+-- real teenager out. Keep in step with AGE_CHECK in safety.js.
+create or replace function age_check_fits(claimed int, estimate numeric) returns boolean
+language sql immutable as $$
+  select claimed >= estimate - 10 and claimed <= estimate + 8
+$$;
+
 -- Minimum age is enforced in a trigger, because a CHECK constraint may only
 -- call IMMUTABLE functions and age depends on the current date.
 -- client_write distinguishes a direct request from the app (which runs as the
@@ -82,7 +101,10 @@ alter table profiles add column if not exists photo_status text not null default
 -- key (which run as the owner). Trusted server code must stay able to grant
 -- verification and premium, so only client writes get those fields locked.
 create or replace function profiles_guard() returns trigger language plpgsql as $$
-declare client_write boolean := current_user in ('authenticated', 'anon');
+declare
+  client_write boolean := current_user in ('authenticated', 'anon');
+  ac jsonb;
+  est numeric;
 begin
   if years_old(new.birthdate) < 13 then
     raise exception 'must be at least 13 years old';
@@ -104,14 +126,38 @@ begin
       new.banned_at := old.banned_at;
       new.photo_url := old.photo_url;
       new.photo_status := old.photo_status;
+      new.verification_provider := old.verification_provider;
+      new.verified_at := old.verified_at;
+      new.age_estimate_low := old.age_estimate_low;
+      new.age_estimate_high := old.age_estimate_high;
     end if;
-  elsif client_write then
-    new.verification := 'none';
+  -- An upsert of an existing profile fires this INSERT branch too, before the
+  -- conflict turns it into an UPDATE (which the branch above then guards), so
+  -- the new-profile rules only apply when the row really is new.
+  elsif client_write and not exists (select 1 from profiles p where p.id = new.id) then
     new.premium_until := null;
     new.premium_tier := null;
     new.banned_at := null;
     new.photo_url := null;
     new.photo_status := 'none';
+    -- A profile can only be created after the on-device age check, and the
+    -- birthday has to be consistent with what the camera saw.
+    ac := case when new.id = auth.uid() then signup_age_check() end;
+    begin
+      est := (ac ->> 'estimate')::numeric;
+    exception when others then est := null;
+    end;
+    if est is null or est < 1 or est > 100 then
+      raise exception 'age check required';
+    end if;
+    if not age_check_fits(years_old(new.birthdate), est) then
+      raise exception 'birthday does not match age check';
+    end if;
+    new.verification := 'estimated';
+    new.verification_provider := 'on-device';
+    new.verified_at := now();
+    new.age_estimate_low := floor(est - 3);
+    new.age_estimate_high := ceil(est + 3);
   end if;
   new.updated_at := now();
   return new;
@@ -326,12 +372,35 @@ create policy room_messages_read on room_messages for select using (
 );
 
 -- ---------- RPCs ----------
--- Age verification is deliberately NOT callable by clients. The only writer of
--- profiles.verification is the `age-check` Edge Function, which runs with the
--- service role and records which provider made the decision. The old
--- complete_age_check() let any modified client mark itself checked, so it is
--- dropped here rather than left in place.
+-- There is no RPC that sets verification. Clients get 'estimated' only by
+-- creating their profile after the on-device age check (see profiles_guard),
+-- and the server-side `age-check` Edge Function can still overwrite it with a
+-- stronger verdict. The old complete_age_check() let any modified client mark
+-- itself checked at any time, so it is dropped here rather than left in place.
 drop function if exists complete_age_check();
+
+-- For accounts made before the signup age check existed: after the person
+-- runs the on-device check, this applies its result to their existing
+-- profile, under the same birthday rule profiles_guard uses for new ones. It
+-- never downgrades a profile that is already checked.
+create or replace function claim_age_check() returns verification_state
+language plpgsql security definer set search_path = public as $$
+declare ac jsonb := signup_age_check(); est numeric; cur verification_state; bd date;
+begin
+  select verification, birthdate into cur, bd from profiles where id = auth.uid();
+  if not found then raise exception 'no profile'; end if;
+  if cur in ('estimated', 'verified') then return cur; end if;
+  begin
+    est := (ac ->> 'estimate')::numeric;
+  exception when others then est := null;
+  end;
+  if est is null or est < 1 or est > 100 then raise exception 'age check required'; end if;
+  if not age_check_fits(years_old(bd), est) then raise exception 'birthday does not match age check'; end if;
+  update profiles set verification = 'estimated', verification_provider = 'on-device', verified_at = now(),
+    age_estimate_low = floor(est - 3), age_estimate_high = ceil(est + 3)
+  where id = auth.uid();
+  return 'estimated';
+end $$;
 
 create or replace function my_gender() returns gender
 language sql stable security definer set search_path = public as $$
@@ -537,10 +606,11 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 -- ---------- what still needs a server before launch ----------
--- * Age verification is written only by the `age-check` Edge Function, which
---   runs with the service role. Set AGE_PROVIDER to a real vendor before
---   launch; the built-in 'demo' provider performs no identity check and is
---   recorded in profiles.verification_provider so you can tell them apart.
+-- * The signup age check runs on the person's device by product decision, so
+--   no image ever leaves the phone. The cost: its result is attested by the
+--   client, and a modified app could lie about it. Such profiles are recorded
+--   with verification_provider = 'on-device'; the server-side `age-check`
+--   function or an ID provider can overwrite that with a stronger verdict.
 -- * Photo uploads should pass a nudity/CSAM classifier in an edge function
 --   before photo_url is written. Never trust a client-supplied URL.
 -- * premium_until must only be written by a payment webhook using the service
@@ -647,3 +717,33 @@ end $$;
 do $$ begin
   alter publication supabase_realtime add table room_messages;
 exception when duplicate_object then null; end $$;
+
+-- ---------- hardening ----------
+-- Leftovers from the old fixed-bracket design.
+drop function if exists my_bracket();
+drop function if exists bracket_for(date);
+
+-- Pin search_path on the helpers so a caller cannot shadow what they call.
+alter function years_old(date) set search_path = public;
+alter function visible_lo(int) set search_path = public;
+alter function visible_hi(int) set search_path = public;
+alter function can_see(int, int) set search_path = public;
+alter function message_violation(text) set search_path = public;
+alter function age_check_fits(int, numeric) set search_path = public;
+alter function profiles_guard() set search_path = public;
+
+-- Every SECURITY DEFINER function is for signed-in people only. Signed-out
+-- callers (anon) get nothing, and trigger functions are callable by no one.
+-- rls_auto_enable is Supabase's own event trigger and is left alone.
+do $$ declare f record; begin
+  for f in select p.oid::regprocedure as sig, p.prorettype = 'trigger'::regtype as is_trigger
+           from pg_proc p
+           where p.pronamespace = 'public'::regnamespace and p.prosecdef and p.proname <> 'rls_auto_enable' loop
+    execute format('revoke execute on function %s from public, anon', f.sig);
+    if f.is_trigger then
+      execute format('revoke execute on function %s from authenticated', f.sig);
+    else
+      execute format('grant execute on function %s to authenticated, service_role', f.sig);
+    end if;
+  end loop;
+end $$;

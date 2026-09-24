@@ -44,6 +44,20 @@
   const DEMO_GENDER = { d1: "woman", d2: "man", d3: "woman", d4: "man", d5: "woman", d6: "man", d7: "woman", d8: "man", d9: "woman", d10: "man", d11: "nonbinary", d12: "man", d13: "woman", d14: "man", d15: "woman", d16: "man" };
   const ALL_GENDERS = S.GENDERS.map((g) => g.id);
 
+  // Supabase auth errors, reworded for people rather than developers.
+  function friendlyAuth(err) {
+    const m = (err && err.message) || "";
+    let msg = m;
+    if (/invalid login credentials/i.test(m)) msg = "That email and password don't match.";
+    else if (/email not confirmed/i.test(m)) msg = "Confirm your email first. Check your inbox for the link.";
+    else if (/rate limit|too many|seconds/i.test(m)) msg = "Too many emails for now. Wait a few minutes and try again.";
+    else if (/password should be at least|weak password/i.test(m)) msg = "Pick a longer password: at least 8 characters.";
+    else if (/already registered|already been registered/i.test(m)) msg = "There's already an account with that email. Log in instead.";
+    else if (/invalid email|unable to validate email/i.test(m)) msg = "That email address doesn't look right.";
+    const e = new Error(msg); e.code = /email not confirmed/i.test(m) ? "unconfirmed" : /already/i.test(m) ? "exists" : err.code;
+    return e;
+  }
+
   function withBracket(u) {
     const b = S.ageBand(u.age);
     return Object.assign({}, u, { band: b ? b.label : null, minor: S.isMinor(u.age), gradient: gradientFor(u.id) });
@@ -67,11 +81,27 @@
     async reset() { localStorage.removeItem(this.key); this.load(); this.emit(); }
 
     async getMe() { return this.db.me ? withBracket(Object.assign({ premium: this.db.premium, tier: this.db.tier }, this.db.me)) : null; }
+    // Mirrors the server: a profile can only be created after the age check,
+    // with a birthday that fits what the camera saw.
     async saveMe(profile) {
       profile.age = S.ageFromBirthdate(profile.birthdate);
+      if (!this.db.me) {
+        const ac = this.db.ageCheck;
+        if (!ac) throw new Error("age check required");
+        if (!S.ageFitsEstimate(profile.age, ac.estimate)) throw new Error("birthday does not match age check");
+        profile.verification = "estimated"; profile.verificationProvider = "on-device";
+      }
       this.db.me = Object.assign({}, this.db.me || { id: "me" }, profile);
       this.save();
       return this.getMe();
+    }
+    ageCheck() { return this.db.ageCheck || null; }
+    async saveAgeCheck(ac) { this.db.ageCheck = ac; this.save(); }
+    async claimAgeCheck() {
+      const me = this.db.me, ac = this.db.ageCheck;
+      if (!me || !ac) throw new Error("age check required");
+      if (!S.ageFitsEstimate(S.ageFromBirthdate(me.birthdate), ac.estimate)) throw new Error("birthday does not match age check");
+      me.verification = "estimated"; me.verificationProvider = "on-device"; this.save();
     }
     async setPremium(on, tier) { this.db.premium = !!on; this.db.tier = on ? (tier || "plus") : null; this.save(); }
     // Demo stand-in for server-side photo moderation.
@@ -81,8 +111,6 @@
       this.save();
       return { ok: true, photo_status: "approved" };
     }
-    // Demo stand-in for the server-side age check.
-    async submitAgeCheck() { this.db.me = Object.assign({}, this.db.me, { verification: "estimated", verificationProvider: "demo" }); this.save(); return { ok: true, verification: "estimated", provider: "demo" }; }
     async signOut() { await this.reset(); }
     async deleteAccount() { await this.reset(); }
 
@@ -255,16 +283,25 @@
   }
 
   // ---------------- Supabase store ----------------
-  // Expects the schema in supabase/schema.sql. Auth is email one-time-code.
+  // Expects the schema in supabase/schema.sql. Auth is email and password,
+  // with the email confirmed before the first login.
   class SupabaseStore {
     constructor(cfg) { this.kind = "supabase"; this.cfg = cfg; this.listeners = new Set(); this.callListeners = new Set(); this.online = new Set(); }
     async init() {
       if (this.sb) return true; // idempotent: boot() runs again after sign-in
       this.sb = window.supabase.createClient(this.cfg.supabaseUrl, this.cfg.supabaseAnonKey);
+      // A password reset link lands here with a recovery session; remember it
+      // so the app asks for a new password instead of opening normally.
+      this.sb.auth.onAuthStateChange((event, s) => {
+        if (event === "PASSWORD_RECOVERY") this.recovery = true;
+        this.session = s;
+        if (s && !this.presence) this.joinPresence();
+        if (!s && this.presence) { this.sb.removeChannel(this.presence); this.sb.removeChannel(this.inbox); this.presence = this.inbox = null; }
+        this.emit();
+      });
       const { data } = await this.sb.auth.getSession();
       this.session = data.session;
-      if (this.uid) this.joinPresence();
-      this.sb.auth.onAuthStateChange((_e, s) => { this.session = s; if (s && !this.presence) this.joinPresence(); this.emit(); });
+      if (this.uid && !this.presence) this.joinPresence();
       return true;
     }
     onChange(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
@@ -283,22 +320,57 @@
     onlineIds() { return this.online; }
     isOnline(id) { return this.online.has(id); }
 
-    // Sign-in is a magic link. Supabase's built-in email sender only supports
-    // the default template, which carries a link rather than a numeric code;
-    // sending a code instead would require configuring custom SMTP.
-    async sendCode(email) {
-      const redirect = location.origin + location.pathname;
-      const { error } = await this.sb.auth.signInWithOtp({ email, options: { emailRedirectTo: redirect } });
-      if (error) throw error;
+    // ----- accounts -----
+    // Sign up carries the on-device age check result into the account's
+    // metadata. That number is all that's kept from the check; the server
+    // compares it to the birthday when the profile is created.
+    get redirect() { return location.origin + location.pathname; }
+    async signUp(email, password, ageCheck) {
+      const { data, error } = await this.sb.auth.signUp({ email, password, options: { emailRedirectTo: this.redirect, data: { age_check: ageCheck } } });
+      if (error) throw friendlyAuth(error);
+      // With email confirmation on, an address that already has an account
+      // comes back as a user with no identities instead of an error.
+      if (data.user && Array.isArray(data.user.identities) && !data.user.identities.length) {
+        const e = new Error("There's already an account with that email. Log in instead."); e.code = "exists"; throw e;
+      }
+      return { needsConfirm: !data.session };
     }
-    async verifyCode(email, token) { const { error } = await this.sb.auth.verifyOtp({ email, token, type: "email" }); if (error) throw error; }
+    async resendConfirm(email) {
+      const { error } = await this.sb.auth.resend({ type: "signup", email, options: { emailRedirectTo: this.redirect } });
+      if (error) throw friendlyAuth(error);
+    }
+    async signIn(email, password) {
+      const { error } = await this.sb.auth.signInWithPassword({ email, password });
+      if (error) throw friendlyAuth(error);
+    }
+    async resetPassword(email) {
+      const { error } = await this.sb.auth.resetPasswordForEmail(email, { redirectTo: this.redirect });
+      if (error) throw friendlyAuth(error);
+    }
+    async updatePassword(password) {
+      const { error } = await this.sb.auth.updateUser({ password });
+      if (error) throw friendlyAuth(error);
+      this.recovery = false;
+    }
+    ageCheck() { return (this.session && this.session.user.user_metadata && this.session.user.user_metadata.age_check) || null; }
+    // For accounts that exist but never did the check (made before it existed).
+    async saveAgeCheck(ac) {
+      const { data, error } = await this.sb.auth.updateUser({ data: { age_check: ac } });
+      if (error) throw friendlyAuth(error);
+      if (data && data.user && this.session) this.session = Object.assign({}, this.session, { user: data.user });
+    }
+    // Applies a fresh age check to a profile made before the check existed.
+    async claimAgeCheck() {
+      const { error } = await this.sb.rpc("claim_age_check");
+      if (error) throw new Error(error.message);
+    }
     async signOut() { await this.sb.auth.signOut(); }
 
     async getMe() {
       if (!this.uid) return null;
       const { data } = await this.sb.from("profiles").select("*").eq("id", this.uid).maybeSingle();
       if (!data) return null;
-      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), tier: data.premium_tier, photoStatus: data.photo_status, verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider });
+      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), tier: data.premium_tier, photoStatus: data.photo_status, verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider, email: this.session.user.email });
     }
     async saveMe(p) {
       // photo_url is deliberately absent: only photo-check may write it, so a
@@ -309,18 +381,6 @@
       const { error } = await this.sb.from("profiles").upsert(row);
       if (error) throw error;
       return this.getMe();
-    }
-    // Age verification is decided server-side by the age-check Edge Function.
-    // There is deliberately no client-callable way to set it.
-    async submitAgeCheck(frames) {
-      const { data, error } = await this.sb.functions.invoke("age-check", { body: { frames } });
-      if (error) {
-        let detail = "";
-        try { detail = (await error.context.json()).error || ""; } catch {}
-        throw new Error(detail || error.message);
-      }
-      if (!data.ok) throw new Error(data.reason || "Age check failed");
-      return data;
     }
     async setPremium() { throw new Error("Hooky+ is granted server-side after a store purchase webhook."); }
     async deleteAccount() { const { error } = await this.sb.rpc("delete_my_account"); if (error) throw error; await this.signOut(); }

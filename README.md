@@ -60,6 +60,10 @@ through the phone's app store billing. Safety features and live calls are never 
 ## Safety design
 
 - Teens only see and are seen by their own age group. Enforced by RLS.
+- Gender preference is mutual: you each have to be in the other person's "show
+  me" list to appear. Enforced in the discovery functions and inside `swipe()`.
+- Age verification is written only by a server-side Edge Function, never by the
+  client. See SETUP.md for how to plug in a real provider.
 - Selfie age check at signup. Simulated in the demo. A real launch needs an
   third-party age-estimation vendor, and unverified profiles never enter Discover.
 - Chats involving a minor block phone numbers, social handles, other app names,
@@ -72,7 +76,8 @@ through the phone's app store billing. Safety features and live calls are never 
 
 ## Before a real launch
 
-- Age estimation vendor integration (edge function sets `verification`).
+- Configure a real age-estimation provider (AGE_PROVIDER=aws and AWS keys). The
+  Edge Function is deployed; only the provider is still the demo one.
 - Photo moderation pipeline and human review queue for reports.
 - App store billing webhook that writes `premium_until`.
 - Privacy policy, terms, and COPPA / state teen-privacy law review.

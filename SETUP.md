@@ -62,15 +62,49 @@ direct SQL access from outside the dashboard.
 4. Copy `config.example.js` to `config.js` and fill in the project URL and
    publishable key from **Project Settings → API Keys**.
 
+## Age verification
+
+The `age-check` Edge Function is deployed and is the only thing that can write
+`profiles.verification`. The client-callable RPC that used to set it has been
+dropped, so a modified client can no longer mark itself verified. Verified
+behaviour:
+
+| Caller | Result |
+| --- | --- |
+| No token | 401, not signed in |
+| Publishable key alone | 401, not signed in |
+| Signed-in user | Runs the check; the server writes the verdict |
+
+The app sends several camera frames. The function picks a provider from the
+`AGE_PROVIDER` secret and records which one decided in
+`profiles.verification_provider`:
+
+- **`demo`**, the current default, confirms the capture looks live rather than a
+  single photo held up to the lens. **It cannot tell an adult from a teenager.**
+- **`aws`** calls AWS Rekognition for a real age range and compares it with the
+  stated birthday, failing the check when they disagree. Set `AGE_PROVIDER=aws`
+  plus `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` under
+  **Edge Functions → Secrets**, then redeploy.
+
+Until a real provider is configured, treat every account as unverified whatever
+the badge says.
+
+JWT verification is turned off on the function on purpose: it authenticates the
+caller itself with `auth.getUser()` and returns 401 when that fails, which avoids
+depending on the platform's legacy-secret signing mode.
+
+## Gender and preferences
+
+Profiles carry a `gender` and a `show_me` list. Matching is mutual: each person
+must be in the other's `show_me` to appear. It is enforced in
+`discover_candidates()`, `who_liked_me()`, and again inside `swipe()`, so calling
+the API directly cannot get around it. Everything except birthdate is editable
+from the in-app Settings screen.
+
 ## Still required before real users
 
-Three things are deliberately left as placeholders, each marked in
-`supabase/schema.sql`:
+Two more placeholders, marked in `supabase/schema.sql`:
 
-- **Age verification is self-reported.** `complete_age_check()` marks an account
-  as checked when the client says the selfie step ran, so a modified client could
-  call it directly. This is the single biggest gap. Replace it with a callback
-  from a real age-estimation vendor.
 - **Photo moderation does not exist.** Photos are stored on the profile with no
   classifier in front of them.
 - **Payments are not wired.** `premium_until` is only writable by trusted server

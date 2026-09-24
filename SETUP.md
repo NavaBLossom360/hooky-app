@@ -79,15 +79,36 @@ The app sends several camera frames. The function picks a provider from the
 `AGE_PROVIDER` secret and records which one decided in
 `profiles.verification_provider`:
 
-- **`demo`**, the current default, confirms the capture looks live rather than a
-  single photo held up to the lens. **It cannot tell an adult from a teenager.**
-- **`aws`** calls AWS Rekognition for a real age range and compares it with the
-  stated birthday, failing the check when they disagree. Set `AGE_PROVIDER=aws`
-  plus `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` under
-  **Edge Functions → Secrets**, then redeploy.
+- **`local`**, the current default, runs two ONNX models inside the function:
+  UltraFace finds the largest face, then age_googlenet estimates age from that
+  crop. A real estimate, made server-side where the client cannot forge it.
+  About two seconds per call, with both models cached between invocations.
+- **`aws`** calls AWS Rekognition instead, which is more accurate but costs
+  money. Set `AGE_PROVIDER=aws` plus `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` under **Edge Functions → Secrets**.
 
-Until a real provider is configured, treat every account as unverified whatever
-the badge says.
+A face must appear in both the first and last frame, so a frame with nobody in
+it fails. That doubles as the liveness check.
+
+### How accurate the local model is
+
+Measured against photographs of known age, cropped to the detected face:
+
+| Subject | Real age | Estimated |
+| --- | --- | --- |
+| Baby | 1 | 1 |
+| Elderly man | about 70 | 79 |
+| Teenager | 16 | 8 |
+| Teenager | 17 | 28 |
+
+Dependable at the extremes, and off by roughly ten years either way for
+teenagers, which is exactly the age range this app serves. The tolerance is
+therefore deliberately wide, because a false rejection locks a real teenager out
+of their own account. The practical effect: it rejects an obvious adult claiming
+to be 14, and it will **not** catch a young-looking adult claiming to be 16.
+
+Cropping is what makes it work. On a full uncropped portrait the same model read
+a 70-year-old as 25-32; cropped to the detected face it read 60-100.
 
 JWT verification is turned off on the function on purpose: it authenticates the
 caller itself with `auth.getUser()` and returns 401 when that fails, which avoids

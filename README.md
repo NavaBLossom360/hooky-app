@@ -76,8 +76,8 @@ through the phone's app store billing. Safety features and live calls are never 
 
 ## Before a real launch
 
-- Configure a real age-estimation provider (AGE_PROVIDER=aws and AWS keys). The
-  Edge Function is deployed; only the provider is still the demo one.
+- Consider a stronger age provider. The local models estimate age for real but
+  are about ten years out for teenagers; AGE_PROVIDER=aws is more accurate.
 - Photo moderation pipeline and human review queue for reports.
 - App store billing webhook that writes `premium_until`.
 - Privacy policy, terms, and COPPA / state teen-privacy law review.

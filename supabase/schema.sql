@@ -213,6 +213,16 @@ create table if not exists subscriptions (
   primary key (provider, provider_ref)
 );
 
+-- Idempotency for the billing webhook. Payment providers retry, so the same
+-- event can arrive more than once and must not be credited twice.
+create table if not exists billing_events (
+  provider text not null,
+  event_id text not null,
+  user_id uuid references profiles(id) on delete cascade,
+  processed_at timestamptz default now(),
+  primary key (provider, event_id)
+);
+
 -- ---------- row level security ----------
 alter table profiles enable row level security;
 alter table swipes enable row level security;
@@ -222,6 +232,7 @@ alter table reads enable row level security;
 alter table blocks enable row level security;
 alter table reports enable row level security;
 alter table subscriptions enable row level security;
+alter table billing_events enable row level security;
 alter table rooms enable row level security;
 alter table room_members enable row level security;
 alter table room_messages enable row level security;

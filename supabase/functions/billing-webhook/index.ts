@@ -8,7 +8,9 @@
 //   { "event": "activate" | "cancel",
 //     "user_id": "<auth user uuid>",
 //     "tier": "plus" | "max",
-//     "period_months": 1 | 3 | 12,
+//     "period_months": 1 | 3 | 12,          // when expires_at is absent
+//     "expires_at": "2027-01-01T00:00:00Z", // preferred: absolute period end
+//     "event_id": "<unique per delivery>",  // required without expires_at| 3 | 12,
 //     "provider": "stripe" | "appstore" | "play" | ...,
 //     "provider_ref": "<subscription id, used for idempotency>" }
 //
@@ -71,15 +73,43 @@ Deno.serve(async (req) => {
   }
 
   if (!TIERS.has(tier)) return json({ error: "tier must be plus or max" }, 400);
-  const months = Number(period_months);
-  if (!PERIODS.has(months)) return json({ error: "period_months must be 1, 3 or 12" }, 400);
 
-  // Extend from whichever is later, so a renewal adds on instead of resetting.
-  const now = Date.now();
-  const base = profile.premium_until && new Date(profile.premium_until).getTime() > now
-    ? new Date(profile.premium_until).getTime() : now;
-  const until = new Date(base);
-  until.setMonth(until.getMonth() + months);
+  // Providers retry webhooks, so the same event can arrive more than once and
+  // must never be credited twice. Two defences, in order of preference:
+  //
+  //   1. expires_at: the provider tells us the absolute end of the paid period
+  //      (Stripe's current_period_end, Apple's expiresDate). Setting it is
+  //      naturally idempotent, and renewals still move it forward.
+  //   2. event_id: a unique id per delivery, recorded in billing_events so a
+  //      replay is rejected. Required when expires_at is absent, because
+  //      "add N months" is not safe to repeat.
+  let until: Date;
+  if (body.expires_at) {
+    const t = new Date(body.expires_at);
+    if (isNaN(t.getTime())) return json({ error: "expires_at is not a valid date" }, 400);
+    until = t;
+  } else {
+    const months = Number(period_months);
+    if (!PERIODS.has(months)) return json({ error: "period_months must be 1, 3 or 12" }, 400);
+    const eventId = body.event_id;
+    if (!eventId) {
+      return json({ error: "send expires_at, or event_id so a retry is not credited twice" }, 400);
+    }
+    const { error: dupErr } = await admin.from("billing_events")
+      .insert({ provider, event_id: String(eventId), user_id });
+    if (dupErr) {
+      // Primary key conflict means we already processed this delivery.
+      if ((dupErr as any).code === "23505") {
+        return json({ ok: true, event: "activate", duplicate: true, premium_until: profile.premium_until });
+      }
+      return json({ error: dupErr.message }, 500);
+    }
+    const now = Date.now();
+    const base = profile.premium_until && new Date(profile.premium_until).getTime() > now
+      ? new Date(profile.premium_until).getTime() : now;
+    until = new Date(base);
+    until.setMonth(until.getMonth() + months);
+  }
 
   // provider_ref is the primary key, so a provider retrying a webhook is safe.
   const { error: subErr } = await admin.from("subscriptions").upsert({

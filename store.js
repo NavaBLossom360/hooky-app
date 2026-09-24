@@ -29,7 +29,7 @@
     P("d10", "Theo", 17, "🎬", "Oregon", "making short films with my friends, always need actors", ["Movies", "Photography", "Theater"], false),
     P("d11", "Harper", 16, "🏃", "Colorado", "cross country. i will talk about running shoes for hours", ["Running", "Hiking", "Music"], true),
     P("d12", "Sam", 17, "🐍", "Arizona", "coding my own game, it is cursed but fun", ["Coding", "Gaming", "Building"], false),
-    P("d13", "Riley", 19, "☕", "New York", "college freshman, running on iced coffee", ["Coffee", "Music", "Hiking"], true),
+    P("d13", "Riley", 18, "☕", "New York", "college freshman, running on iced coffee", ["Coffee", "Music", "Hiking"], true),
     P("d14", "Diego", 20, "🎶", "Texas", "producing beats in my dorm", ["Music", "Coding", "Basketball"], false),
     P("d15", "Nina", 23, "🌿", "California", "plant mom, marathon training, terrible at cooking", ["Running", "Plants", "Movies"], true),
     P("d16", "Marcus", 25, "🏋️", "Illinois", "gym, board games, and a very needy cat", ["Fitness", "Board games", "Cats"], false),
@@ -45,8 +45,8 @@
   const ALL_GENDERS = S.GENDERS.map((g) => g.id);
 
   function withBracket(u) {
-    const b = S.bracketForAge(u.age);
-    return Object.assign({}, u, { bracket: b ? b.id : null, gradient: gradientFor(u.id) });
+    const b = S.ageBand(u.age);
+    return Object.assign({}, u, { band: b ? b.label : null, minor: S.isMinor(u.age), gradient: gradientFor(u.id) });
   }
 
   // ---------------- Local demo store ----------------
@@ -54,8 +54,10 @@
     constructor() { this.kind = "local"; this.key = "hooky.v1"; this.load(); this.listeners = new Set(); this.callListeners = new Set(); }
     load() {
       try { this.db = JSON.parse(localStorage.getItem(this.key)) || null; } catch { this.db = null; }
-      if (!this.db) this.db = { me: null, swipes: {}, matches: [], messages: {}, reports: [], blocks: [], likesLog: [], premium: false, unread: {}, rang: {} };
-      this.db.rang ||= {};
+      if (!this.db) this.db = { me: null, swipes: {}, matches: [], messages: {}, reports: [], blocks: [], likesLog: [], premium: false, tier: null, unread: {}, rang: {}, rooms: [], roomMsgs: {} };
+      this.db.rang = this.db.rang || {};
+      this.db.rooms = this.db.rooms || [];
+      this.db.roomMsgs = this.db.roomMsgs || {};
     }
     persist() { try { localStorage.setItem(this.key, JSON.stringify(this.db)); } catch {} }
     save() { this.persist(); this.emit(); }
@@ -64,14 +66,21 @@
     async init() { return true; }
     async reset() { localStorage.removeItem(this.key); this.load(); this.emit(); }
 
-    async getMe() { return this.db.me ? withBracket(Object.assign({ premium: this.db.premium }, this.db.me)) : null; }
+    async getMe() { return this.db.me ? withBracket(Object.assign({ premium: this.db.premium, tier: this.db.tier }, this.db.me)) : null; }
     async saveMe(profile) {
       profile.age = S.ageFromBirthdate(profile.birthdate);
       this.db.me = Object.assign({}, this.db.me || { id: "me" }, profile);
       this.save();
       return this.getMe();
     }
-    async setPremium(on) { this.db.premium = !!on; this.save(); }
+    async setPremium(on, tier) { this.db.premium = !!on; this.db.tier = on ? (tier || "plus") : null; this.save(); }
+    // Demo stand-in for server-side photo moderation.
+    async submitPhoto(dataUrl) {
+      if (!dataUrl) { this.db.me = Object.assign({}, this.db.me, { photo: null }); this.save(); return { ok: true, removed: true }; }
+      this.db.me = Object.assign({}, this.db.me, { photo: dataUrl });
+      this.save();
+      return { ok: true, photo_status: "approved" };
+    }
     // Demo stand-in for the server-side age check.
     async submitAgeCheck() { this.db.me = Object.assign({}, this.db.me, { verification: "estimated", verificationProvider: "demo" }); this.save(); return { ok: true, verification: "estimated", provider: "demo" }; }
     async signOut() { await this.reset(); }
@@ -88,7 +97,7 @@
       const online = this.onlineIds();
       const showMe = me.showMe || ALL_GENDERS;
       return this.people()
-        .filter((p) => S.canSee(me.bracket, p.bracket) && showMe.includes(p.gender) && !this.db.swipes[p.id] && !this.db.blocks.includes(p.id))
+        .filter((p) => S.canSee(me.age, p.age) && showMe.includes(p.gender) && !this.db.swipes[p.id] && !this.db.blocks.includes(p.id))
         .map((p) => Object.assign(p, { online: online.has(p.id) }))
         .sort((a, b) => Number(b.online) - Number(a.online));
     }
@@ -101,7 +110,7 @@
     async swipe(id, dir) {
       const me = await this.getMe();
       const target = this.people().find((p) => p.id === id);
-      if (!target || !S.canSee(me.bracket, target.bracket)) throw new Error("Not allowed");
+      if (!target || !S.canSee(me.age, target.age)) throw new Error("Not allowed");
       if (dir === "like") {
         if ((await this.likesRemaining()) <= 0) return { limited: true };
         this.db.likesLog.push(Date.now());
@@ -126,7 +135,7 @@
     async whoLikedMe() {
       const me = await this.getMe();
       const showMe = me.showMe || ALL_GENDERS;
-      return this.people().filter((p) => p.likedYou && S.canSee(me.bracket, p.bracket) && showMe.includes(p.gender) && !this.db.swipes[p.id] && !this.db.blocks.includes(p.id));
+      return this.people().filter((p) => p.likedYou && S.canSee(me.age, p.age) && showMe.includes(p.gender) && !this.db.swipes[p.id] && !this.db.blocks.includes(p.id));
     }
     async matches() {
       const online = this.onlineIds();
@@ -145,7 +154,7 @@
       const me = await this.getMe();
       const m = this.db.matches.find((x) => x.id === matchId);
       const other = this.people().find((p) => p.id === m.userId);
-      const meMinor = S.bracketForAge(me.age).minor, otherMinor = S.bracketForAge(other.age).minor;
+      const meMinor = S.isMinor(me.age), otherMinor = S.isMinor(other.age);
       const check = S.checkMessage(text, meMinor, otherMinor);
       if (check.blocked) return { blocked: true, reasons: check.reasons };
       const msg = { id: "x" + Date.now(), from: "me", text, at: Date.now() };
@@ -160,7 +169,7 @@
         this.save();
         if (!this.db.rang[matchId] && this.isOnline(m.userId) && Math.random() < 0.5) {
           this.db.rang[matchId] = true; this.persist();
-          setTimeout(() => this.callListeners.forEach((fn) => fn({ type: "ring", matchId, from: m.userId })), 2500);
+          setTimeout(() => this.callListeners.forEach((fn) => fn({ type: "ring", matchId, from: m.userId, mode: Math.random() < 0.5 ? "voice" : "video" })), 2500);
         }
       }, 1200 + Math.random() * 2000);
       return { ok: true, msg, warn: check.warn ? check.reasons : null };
@@ -172,8 +181,45 @@
     async blocked() { return this.db.blocks.map((id) => this.people().find((p) => p.id === id)).filter(Boolean); }
     async totalUnread() { return Object.values(this.db.unread).reduce((a, b) => a + b, 0); }
 
+    // ----- private rooms (demo) -----
+    async roomsAllowed() { return this.db.premium ? S.roomsAllowed(this.db.tier || "plus") : 0; }
+    async browseRooms() {
+      const me = await this.getMe();
+      const band = S.ageBand(me.age);
+      const seeded = [
+        { id: "r_seed1", topic: "late night study group", owner_name: "Priya", mine: false, joined: false, members: 4, age_lo: band.lo, age_hi: band.hi },
+        { id: "r_seed2", topic: "indie game devs", owner_name: "Sam", mine: false, joined: false, members: 7, age_lo: band.lo, age_hi: band.hi },
+      ];
+      return seeded.concat(this.db.rooms.map((r) => Object.assign({}, r, { members: (this.db.roomMsgs[r.id] || []).length ? 2 : 1 })));
+    }
+    async createRoom(topic) {
+      const me = await this.getMe();
+      if (!this.db.premium) throw new Error("Rooms need Hooky+");
+      const allowed = S.roomsAllowed(this.db.tier || "plus");
+      if (this.db.rooms.length >= allowed) throw new Error("You've used all your rooms");
+      const check = S.checkMessage(topic, true, true);
+      if (check.blocked) throw new Error("That topic isn't allowed here");
+      const band = S.ageBand(me.age);
+      const r = { id: "r" + Date.now(), topic: topic.trim(), owner_name: me.name, mine: true, joined: true, age_lo: band.lo, age_hi: band.hi };
+      this.db.rooms.unshift(r); this.db.roomMsgs[r.id] = []; this.save();
+      return r.id;
+    }
+    async closeRoom(id) { this.db.rooms = this.db.rooms.filter((r) => r.id !== id); delete this.db.roomMsgs[id]; this.save(); }
+    async joinRoom(id) { const r = this.db.rooms.find((x) => x.id === id); if (r) r.joined = true; this.db.roomMsgs[id] = this.db.roomMsgs[id] || []; this.save(); }
+    async leaveRoom(id) { const r = this.db.rooms.find((x) => x.id === id); if (r) r.joined = false; this.save(); }
+    async roomMessages(id) { return this.db.roomMsgs[id] || []; }
+    async roomSend(id, body) {
+      const me = await this.getMe();
+      const check = S.checkMessage(body, S.isMinor(me.age), true);
+      if (check.blocked) return { blocked: true, reasons: check.reasons };
+      (this.db.roomMsgs[id] = this.db.roomMsgs[id] || []).push({ id: "rm" + Date.now(), sender_name: me.name, mine: true, body, at: Date.now() });
+      this.save();
+      return { ok: true };
+    }
+    subscribeRoom(id, fn) { return this.onChange(fn); }
+
     // Live calls (demo): the other person answers after a moment, most of the time.
-    async requestCall(matchId) {
+    async requestCall(matchId, mode) {
       const m = this.db.matches.find((x) => x.id === matchId);
       await new Promise((r) => setTimeout(r, 1800 + Math.random() * 1500));
       const accepted = hash(matchId + Math.floor(Date.now() / 30000)) % 4 !== 0;
@@ -228,10 +274,12 @@
       if (!this.uid) return null;
       const { data } = await this.sb.from("profiles").select("*").eq("id", this.uid).maybeSingle();
       if (!data) return null;
-      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider });
+      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), tier: data.premium_tier, photoStatus: data.photo_status, verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider });
     }
     async saveMe(p) {
-      const row = { id: this.uid, display_name: p.name, birthdate: p.birthdate, emoji: p.emoji, region: p.region, bio: p.bio, interests: p.tags, photo_url: p.photo || null };
+      // photo_url is deliberately absent: only photo-check may write it, so a
+      // client cannot publish a photo that skipped moderation.
+      const row = { id: this.uid, display_name: p.name, birthdate: p.birthdate, emoji: p.emoji, region: p.region, bio: p.bio, interests: p.tags };
       if (p.gender) row.gender = p.gender;
       if (p.showMe) row.show_me = p.showMe;
       const { error } = await this.sb.from("profiles").upsert(row);
@@ -289,6 +337,53 @@
     async blocked() { const { data } = await this.sb.rpc("my_blocked"); return (data || []).map((r) => this.map(r)); }
     async totalUnread() { const { data } = await this.sb.rpc("total_unread"); return data || 0; }
 
+    // Photo moderation runs server-side; the profiles trigger blocks the client
+    // from writing photo_url, so this is the only way a photo gets published.
+    async submitPhoto(dataUrl) {
+      const body = dataUrl ? { image: dataUrl } : { remove: true };
+      const { data, error } = await this.sb.functions.invoke("photo-check", { body });
+      if (error) {
+        let detail = "";
+        try { detail = (await error.context.json()).error || ""; } catch {}
+        throw new Error(detail || error.message);
+      }
+      if (!data.ok && !data.removed) throw new Error(data.reason || "That photo wasn't accepted.");
+      return data;
+    }
+
+    // ----- private rooms -----
+    async roomsAllowed() { const { data } = await this.sb.rpc("rooms_allowed"); return data || 0; }
+    async browseRooms() {
+      const { data, error } = await this.sb.rpc("browse_rooms", { lim: 30 });
+      if (error) throw error;
+      return (data || []).map((r) => ({ id: r.id, topic: r.topic, owner_name: r.owner_name, members: r.members, joined: r.joined, mine: r.mine, age_lo: r.age_lo, age_hi: r.age_hi }));
+    }
+    async createRoom(topic) {
+      const { data, error } = await this.sb.rpc("create_room", { topic });
+      if (error) throw new Error(error.message.replace(/^.*?:\s*/, ""));
+      return data;
+    }
+    async closeRoom(id) { const { error } = await this.sb.rpc("close_room", { rid: id }); if (error) throw error; }
+    async joinRoom(id) { const { error } = await this.sb.rpc("join_room", { rid: id }); if (error) throw new Error(error.message.replace(/^.*?:\s*/, "")); }
+    async leaveRoom(id) { const { error } = await this.sb.rpc("leave_room", { rid: id }); if (error) throw error; }
+    async roomMessages(id) {
+      const { data, error } = await this.sb.rpc("room_messages_list", { rid: id, lim: 100 });
+      if (error) throw error;
+      return (data || []).map((m) => ({ id: m.id, sender_name: m.sender_name, mine: m.sender_id === this.uid, body: m.body, at: new Date(m.created_at).getTime() }));
+    }
+    async roomSend(id, body) {
+      const { error } = await this.sb.rpc("room_send", { rid: id, body });
+      if (error) {
+        if (/blocked/i.test(error.message)) return { blocked: true, reasons: [error.message.replace(/^.*blocked:?\s*/i, "")] };
+        throw error;
+      }
+      return { ok: true };
+    }
+    subscribeRoom(id, fn) {
+      const ch = this.sb.channel("room:" + id).on("postgres_changes", { event: "INSERT", schema: "public", table: "room_messages", filter: "room_id=eq." + id }, fn).subscribe();
+      return () => this.sb.removeChannel(ch);
+    }
+
     // Live calls: ring the other person on their inbox channel, then signal WebRTC on a per-match channel.
     async sendTo(uid, payload) {
       const ch = this.sb.channel("user:" + uid);
@@ -296,7 +391,7 @@
       await ch.send({ type: "broadcast", event: "call", payload });
       this.sb.removeChannel(ch);
     }
-    async requestCall(matchId) {
+    async requestCall(matchId, mode) {
       const m = (await this.matches()).find((x) => x.id === matchId);
       if (!m) throw new Error("not your match");
       return new Promise((resolve) => {
@@ -304,7 +399,7 @@
           if (p.matchId === matchId && (p.type === "accept" || p.type === "decline")) { off(); clearTimeout(t); resolve({ accepted: p.type === "accept", userId: m.userId }); }
         });
         const t = setTimeout(() => { off(); resolve({ accepted: false, timeout: true, userId: m.userId }); }, 30000);
-        this.sendTo(m.userId, { type: "ring", matchId, from: this.uid });
+        this.sendTo(m.userId, { type: "ring", matchId, from: this.uid, mode: mode || "video" });
       });
     }
     subscribeCalls(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }

@@ -25,15 +25,23 @@ exception when duplicate_object then null; end $$;
 
 -- ---------- helpers ----------
 -- STABLE, not IMMUTABLE: the result depends on today's date.
-create or replace function bracket_for(birthdate date) returns age_bracket
-language sql stable as $$
-  select case
-    when birthdate is null then null
-    when extract(year from age(birthdate))::int < 13 then null
-    when extract(year from age(birthdate))::int <= 15 then '13-15'::age_bracket
-    when extract(year from age(birthdate))::int <= 17 then '16-17'::age_bracket
-    when extract(year from age(birthdate))::int <= 20 then '18-20'::age_bracket
-    else '21+'::age_bracket end
+-- Age visibility is a sliding window, not fixed buckets. Under 18 you can
+-- never see past 18; from 18 up you can never see below 17. Those clamps meet
+-- in exactly one place, so 17 and 18 can see each other and no other
+-- minor/adult pair can. Pure integer maths, so these are IMMUTABLE and usable
+-- inside row level security policies.
+create or replace function visible_lo(a int) returns int language sql immutable as $$
+  select case when a < 18 then greatest(13, a - 2) else greatest(17, a - 2) end
+$$;
+create or replace function visible_hi(a int) returns int language sql immutable as $$
+  select case when a < 18 then least(18, a + 2) else least(25, a + 2) end
+$$;
+-- Visibility is mutual: each has to fall inside the other's window.
+create or replace function can_see(viewer_age int, target_age int) returns boolean
+language sql immutable as $$
+  select viewer_age between 13 and 25 and target_age between 13 and 25
+     and target_age between visible_lo(viewer_age) and visible_hi(viewer_age)
+     and viewer_age between visible_lo(target_age) and visible_hi(target_age)
 $$;
 
 create or replace function years_old(birthdate date) returns int
@@ -64,6 +72,8 @@ alter table profiles add column if not exists verification_provider text;
 alter table profiles add column if not exists verified_at timestamptz;
 alter table profiles add column if not exists age_estimate_low int;
 alter table profiles add column if not exists age_estimate_high int;
+alter table profiles add column if not exists premium_tier text check (premium_tier in ('plus', 'max'));
+alter table profiles add column if not exists photo_status text not null default 'none' check (photo_status in ('none', 'pending', 'approved', 'rejected'));
 
 -- Minimum age is enforced in a trigger, because a CHECK constraint may only
 -- call IMMUTABLE functions and age depends on the current date.
@@ -74,8 +84,11 @@ alter table profiles add column if not exists age_estimate_high int;
 create or replace function profiles_guard() returns trigger language plpgsql as $$
 declare client_write boolean := current_user in ('authenticated', 'anon');
 begin
-  if bracket_for(new.birthdate) is null then
+  if years_old(new.birthdate) < 13 then
     raise exception 'must be at least 13 years old';
+  end if;
+  if years_old(new.birthdate) > 25 then
+    raise exception 'Hooky is for 13 to 25 year olds';
   end if;
   if tg_op = 'UPDATE' then
     -- Birthdate is write-once. Nobody ages themselves into another group.
@@ -83,14 +96,22 @@ begin
       raise exception 'birthdate cannot be changed';
     end if;
     if client_write then
+      -- Only trusted server code may set these. photo_url in particular: if a
+      -- client could write it, it would skip photo moderation entirely.
       new.verification := old.verification;
       new.premium_until := old.premium_until;
+      new.premium_tier := old.premium_tier;
       new.banned_at := old.banned_at;
+      new.photo_url := old.photo_url;
+      new.photo_status := old.photo_status;
     end if;
   elsif client_write then
     new.verification := 'none';
     new.premium_until := null;
+    new.premium_tier := null;
     new.banned_at := null;
+    new.photo_url := null;
+    new.photo_status := 'none';
   end if;
   new.updated_at := now();
   return new;
@@ -152,6 +173,35 @@ create table if not exists reports (
 );
 create index if not exists reports_open on reports(status, created_at);
 
+-- Private rooms. A room is pinned to the age window of whoever created it, so
+-- it can never become a way to reach outside your own window.
+create table if not exists rooms (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references profiles(id) on delete cascade,
+  topic text not null check (char_length(topic) between 3 and 60),
+  age_lo int not null,
+  age_hi int not null,
+  created_at timestamptz default now(),
+  closed_at timestamptz
+);
+create index if not exists rooms_open on rooms(created_at) where closed_at is null;
+
+create table if not exists room_members (
+  room_id uuid references rooms(id) on delete cascade,
+  user_id uuid references profiles(id) on delete cascade,
+  joined_at timestamptz default now(),
+  primary key (room_id, user_id)
+);
+
+create table if not exists room_messages (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid references rooms(id) on delete cascade,
+  sender_id uuid references profiles(id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 500),
+  created_at timestamptz default now()
+);
+create index if not exists room_messages_room on room_messages(room_id, created_at);
+
 -- Written by the payment webhook (App Store / Play / Stripe), never by clients.
 create table if not exists subscriptions (
   user_id uuid references profiles(id) on delete cascade,
@@ -172,11 +222,14 @@ alter table reads enable row level security;
 alter table blocks enable row level security;
 alter table reports enable row level security;
 alter table subscriptions enable row level security;
+alter table rooms enable row level security;
+alter table room_members enable row level security;
+alter table room_messages enable row level security;
 
 -- SECURITY DEFINER so it reads profiles without re-entering RLS (no recursion).
-create or replace function my_bracket() returns age_bracket
+create or replace function my_age() returns int
 language sql stable security definer set search_path = public as $$
-  select bracket_for(birthdate) from profiles where id = auth.uid()
+  select years_old(birthdate) from profiles where id = auth.uid()
 $$;
 
 create or replace function is_blocked_either_way(other uuid) returns boolean
@@ -200,7 +253,7 @@ create policy profiles_self on profiles for all
 -- You may read anyone in your own bracket who is not banned and not blocked.
 drop policy if exists profiles_same_bracket on profiles;
 create policy profiles_same_bracket on profiles for select using (
-  bracket_for(birthdate) = my_bracket()
+  can_see(my_age(), years_old(birthdate))
   and banned_at is null
   and not is_blocked_either_way(id)
 );
@@ -230,6 +283,20 @@ create policy reports_insert on reports for insert with check (reporter_id = aut
 
 drop policy if exists subs_read on subscriptions;
 create policy subs_read on subscriptions for select using (user_id = auth.uid());
+
+-- Rooms are visible to anyone whose age fits the room, and to its members.
+drop policy if exists rooms_visible on rooms;
+create policy rooms_visible on rooms for select using (
+  closed_at is null and my_age() between age_lo and age_hi
+);
+drop policy if exists room_members_read on room_members;
+create policy room_members_read on room_members for select using (
+  exists (select 1 from room_members m where m.room_id = room_id and m.user_id = auth.uid())
+);
+drop policy if exists room_messages_read on room_messages;
+create policy room_messages_read on room_messages for select using (
+  exists (select 1 from room_members m where m.room_id = room_messages.room_id and m.user_id = auth.uid())
+);
 
 -- ---------- RPCs ----------
 -- Age verification is deliberately NOT callable by clients. The only writer of
@@ -263,7 +330,7 @@ language sql stable security definer set search_path = public as $$
          p.bio, p.interests, p.photo_url, p.gender
   from profiles p
   where p.id <> auth.uid()
-    and bracket_for(p.birthdate) = my_bracket()
+    and can_see(my_age(), years_old(p.birthdate))
     and p.banned_at is null
     and p.verification in ('estimated', 'verified')
     and p.gender is not null
@@ -290,7 +357,7 @@ language plpgsql security definer set search_path = public as $$
 declare me uuid := auth.uid(); mid uuid; lo uuid; hi uuid;
 begin
   if me is null or target = me then raise exception 'invalid target'; end if;
-  if (select bracket_for(birthdate) from profiles where id = target) is distinct from my_bracket() then
+  if not can_see(my_age(), (select years_old(birthdate) from profiles where id = target)) then
     raise exception 'not in your age group';
   end if;
   if is_blocked_either_way(target) then raise exception 'blocked'; end if;
@@ -335,7 +402,7 @@ language sql stable security definer set search_path = public as $$
          p.bio, p.interests, p.photo_url, p.gender
   from swipes s join profiles p on p.id = s.swiper_id
   where s.target_id = auth.uid() and s.dir = 'like'
-    and bracket_for(p.birthdate) = my_bracket()
+    and can_see(my_age(), years_old(p.birthdate))
     and p.banned_at is null
     and p.gender = any(my_show_me())
     and my_gender() = any(coalesce(p.show_me, enum_range(null::gender)))
@@ -388,8 +455,8 @@ begin
   if other is null then raise exception 'not your match'; end if;
   if is_blocked_either_way(other) then raise exception 'blocked'; end if;
 
-  strict_mode := (select bracket_for(birthdate) in ('13-15', '16-17') from profiles where id = me)
-              or (select bracket_for(birthdate) in ('13-15', '16-17') from profiles where id = other);
+  strict_mode := (select years_old(birthdate) < 18 from profiles where id = me)
+              or (select years_old(birthdate) < 18 from profiles where id = other);
   v := message_violation(body);
   if strict_mode and v is not null then raise exception 'blocked: %', v; end if;
 
@@ -452,3 +519,104 @@ exception when duplicate_object then null; end $$;
 -- * premium_until must only be written by a payment webhook using the service
 --   role key. The profiles trigger already blocks clients from setting it.
 -- * Reports need a human review queue. The auto-hide above is a stopgap.
+
+-- ---------- private rooms ----------
+-- Room limits come from the tier, so the client cannot grant itself rooms.
+create or replace function rooms_allowed() returns int
+language sql stable security definer set search_path = public as $$
+  select case
+    when not is_premium() then 0
+    when (select premium_tier from profiles where id = auth.uid()) = 'max' then 5
+    else 1 end
+$$;
+
+create or replace function create_room(topic text) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid(); a int; rid uuid; used int;
+begin
+  if me is null then raise exception 'not signed in'; end if;
+  if rooms_allowed() = 0 then raise exception 'rooms need Hooky+'; end if;
+  select count(*) into used from rooms where owner_id = me and closed_at is null;
+  if used >= rooms_allowed() then raise exception 'you have used all your rooms'; end if;
+  if char_length(trim(topic)) < 3 then raise exception 'give the room a topic'; end if;
+  -- A topic is public text, so it gets the same filtering a message would.
+  if message_violation(topic) is not null then raise exception 'that topic is not allowed here'; end if;
+
+  a := my_age();
+  insert into rooms (owner_id, topic, age_lo, age_hi)
+  values (me, trim(topic), visible_lo(a), visible_hi(a))
+  returning id into rid;
+  insert into room_members (room_id, user_id) values (rid, me);
+  return rid;
+end $$;
+
+create or replace function close_room(rid uuid) returns void
+language sql security definer set search_path = public as $$
+  update rooms set closed_at = now() where id = rid and owner_id = auth.uid()
+$$;
+
+create or replace function join_room(rid uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare a int := my_age(); lo int; hi int; owner uuid;
+begin
+  select age_lo, age_hi, owner_id into lo, hi, owner from rooms where id = rid and closed_at is null;
+  if lo is null then raise exception 'room not found'; end if;
+  if a < lo or a > hi then raise exception 'that room is not for your age group'; end if;
+  if is_blocked_either_way(owner) then raise exception 'blocked'; end if;
+  insert into room_members (room_id, user_id) values (rid, auth.uid()) on conflict do nothing;
+end $$;
+
+create or replace function leave_room(rid uuid) returns void
+language sql security definer set search_path = public as $$
+  delete from room_members where room_id = rid and user_id = auth.uid()
+$$;
+
+-- Rooms you can see: open, age-appropriate, and not run by someone you blocked.
+create or replace function browse_rooms(lim int default 30)
+returns table (id uuid, topic text, owner_id uuid, owner_name text, age_lo int, age_hi int,
+               members int, joined boolean, mine boolean, created_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select r.id, r.topic, r.owner_id, p.display_name, r.age_lo, r.age_hi,
+         (select count(*) from room_members m where m.room_id = r.id)::int,
+         exists (select 1 from room_members m where m.room_id = r.id and m.user_id = auth.uid()),
+         r.owner_id = auth.uid(),
+         r.created_at
+  from rooms r join profiles p on p.id = r.owner_id
+  where r.closed_at is null
+    and my_age() between r.age_lo and r.age_hi
+    and p.banned_at is null
+    and not is_blocked_either_way(r.owner_id)
+  order by r.created_at desc
+  limit lim
+$$;
+
+create or replace function room_messages_list(rid uuid, lim int default 100)
+returns table (id uuid, sender_id uuid, sender_name text, body text, created_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select m.id, m.sender_id, p.display_name, m.body, m.created_at
+  from room_messages m join profiles p on p.id = m.sender_id
+  where m.room_id = rid
+    and exists (select 1 from room_members x where x.room_id = rid and x.user_id = auth.uid())
+  order by m.created_at
+  limit lim
+$$;
+
+-- A room whose window reaches below 18 is filtered as strictly as a teen chat.
+create or replace function room_send(rid uuid, body text) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid(); lo int; v text; new_id uuid;
+begin
+  select age_lo into lo from rooms where id = rid and closed_at is null;
+  if lo is null then raise exception 'room not found'; end if;
+  if not exists (select 1 from room_members m where m.room_id = rid and m.user_id = me) then
+    raise exception 'join the room first';
+  end if;
+  v := message_violation(body);
+  if (lo < 18 or my_age() < 18) and v is not null then raise exception 'blocked: %', v; end if;
+  insert into room_messages (room_id, sender_id, body) values (rid, me, body) returning id into new_id;
+  return new_id;
+end $$;
+
+do $$ begin
+  alter publication supabase_realtime add table room_messages;
+exception when duplicate_object then null; end $$;

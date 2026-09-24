@@ -5,25 +5,31 @@
   const ICE = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  function start({ store, me, other, matchId, isCaller, onEnd, onReport }) {
+  // mode is "video" or "voice". A voice call asks for no camera at all, which
+  // is the point: some people want to talk without being on camera.
+  function start({ store, me, other, matchId, isCaller, mode, onEnd, onReport }) {
+    const voice = mode === "voice";
     const root = document.createElement("div");
-    root.className = "call";
+    root.className = "call" + (voice ? " voice" : "");
     root.innerHTML = `
       <div class="call-remote" id="remote">
         <div class="call-placeholder" style="background:${other.gradient}">
           ${other.photo ? `<img src="${esc(other.photo)}" alt="">` : `<span>${esc(other.emoji || "🙂")}</span>`}
         </div>
         <video id="remoteVideo" autoplay playsinline class="hidden"></video>
+        <audio id="remoteAudio" autoplay class="hidden"></audio>
       </div>
       <video id="localVideo" class="call-local" autoplay muted playsinline></video>
       <div class="call-top">
-        <div class="call-name">${esc(other.name)}</div>
+        <div class="call-name">${esc(other.name)}${voice ? " · voice" : ""}</div>
         <div class="call-status" id="status">Connecting…</div>
       </div>
-      <div class="call-rules">Face on · keep it appropriate · hang up any time</div>
+      <div class="call-rules">${voice
+        ? "Voice only · keep it appropriate · hang up any time"
+        : "Face on · keep it appropriate · hang up any time"}</div>
       <div class="call-controls">
         <button class="cbtn" id="mute" title="Mute">🎤</button>
-        <button class="cbtn" id="cam" title="Camera">📷</button>
+        ${voice ? "" : `<button class="cbtn" id="cam" title="Camera">📷</button>`}
         <button class="cbtn end" id="end" title="End">✕</button>
         <button class="cbtn" id="report" title="Report">⚑</button>
       </div>`;
@@ -56,14 +62,16 @@
     $("#end").onclick = () => end("hangup");
     $("#report").onclick = () => { end("report"); onReport && onReport(); };
     $("#mute").onclick = (e) => { if (!stream) return; const t = stream.getAudioTracks()[0]; if (!t) return; t.enabled = !t.enabled; e.currentTarget.classList.toggle("off", !t.enabled); };
-    $("#cam").onclick = (e) => { if (!stream) return; const t = stream.getVideoTracks()[0]; if (!t) return; t.enabled = !t.enabled; e.currentTarget.classList.toggle("off", !t.enabled); };
+    $("#cam") && ($("#cam").onclick = (e) => { if (!stream) return; const t = stream.getVideoTracks()[0]; if (!t) return; t.enabled = !t.enabled; e.currentTarget.classList.toggle("off", !t.enabled); });
 
     (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 } }, audio: true });
-        localVideo.srcObject = stream;
+        stream = await navigator.mediaDevices.getUserMedia(voice
+          ? { audio: true }
+          : { video: { facingMode: "user", width: { ideal: 640 } }, audio: true });
+        if (voice) localVideo.classList.add("hidden"); else localVideo.srcObject = stream;
       } catch {
-        status.textContent = "Camera or mic blocked";
+        status.textContent = voice ? "Microphone blocked" : "Camera or mic blocked";
         localVideo.classList.add("hidden");
         if (store.kind === "local") setTimeout(connected, 800);
         else { setTimeout(() => end("no-media"), 1500); return; }
@@ -79,7 +87,11 @@
       ch = store.callChannel(matchId);
       pc = new RTCPeerConnection(ICE);
       stream && stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-      pc.ontrack = (ev) => { remoteVideo.srcObject = ev.streams[0]; remoteVideo.classList.remove("hidden"); connected(); };
+      pc.ontrack = (ev) => {
+        if (voice) { $("#remoteAudio").srcObject = ev.streams[0]; }
+        else { remoteVideo.srcObject = ev.streams[0]; remoteVideo.classList.remove("hidden"); }
+        connected();
+      };
       pc.onicecandidate = (ev) => { if (ev.candidate) ch.send("ice", ev.candidate); };
       pc.onconnectionstatechange = () => { if (["failed", "disconnected", "closed"].includes(pc.connectionState) && startedAt) end("dropped"); };
       ch.on(async (msg) => {

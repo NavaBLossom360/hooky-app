@@ -266,3 +266,28 @@ textarea.input { resize: none; min-height: 90px; }
 @keyframes drop { to { transform: translateY(110vh) rotate(720deg); opacity: 0; } }
 .setting > span:first-child { white-space: nowrap; flex-shrink: 0; margin-right: 12px; }
 .setting > span:last-child { text-align: right; }
+
+/* ---------- v4: voice calls, rooms, plans ---------- */
+.call.voice .call-placeholder { font-size: 150px; }
+.call.voice .call-placeholder::after { background: radial-gradient(circle at 50% 40%, transparent 20%, rgba(0,0,0,0.6)); }
+.call.voice .call-local { display: none; }
+
+.room-card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+.room-topic { font-weight: 700; font-size: 16px; }
+.room-meta { color: var(--muted); font-size: 12px; }
+.room-actions { display: flex; gap: 8px; margin-top: 4px; }
+.room-msgs { flex: 1; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.room-msg { max-width: 85%; }
+.room-msg .who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.room-msg .bubble { background: var(--bg-2); padding: 9px 13px; border-radius: 16px; font-size: 15px; line-height: 1.35; display: inline-block; }
+.room-msg.me { align-self: flex-end; text-align: right; }
+.room-msg.me .bubble { background: var(--pink-grad); color: #fff; }
+
+.seg { display: flex; background: rgba(255,255,255,0.06); border-radius: 14px; padding: 4px; gap: 4px; }
+.seg button { flex: 1; padding: 9px 8px; border-radius: 11px; font-size: 13px; font-weight: 700; color: var(--muted); }
+.seg button.on { background: rgba(255,79,139,0.22); color: #fff; }
+.plan-row { display: flex; align-items: center; justify-content: space-between; border: 2px solid var(--line); border-radius: 16px; padding: 13px 15px; width: 100%; text-align: left; }
+.plan-row.on { border-color: var(--pink); background: rgba(255,79,139,0.08); }
+.plan-row .price { font-size: 19px; font-weight: 800; }
+.plan-row .per { font-size: 11px; color: var(--muted); }
+.teen-badge { font-size: 10px; font-weight: 800; padding: 3px 7px; border-radius: 999px; background: rgba(200,255,79,0.16); color: var(--lime); }

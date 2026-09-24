@@ -69,19 +69,20 @@
     if (p.type !== "ring" || state.inCall) return;
     const m = (await store.matches()).find((x) => x.id === p.matchId); if (!m) return;
     buzz([80, 60, 80]);
-    modal(`<div class="ringing">${avatarHtml(m.user, "lg")}<h2>${esc(m.user.name)} wants to go live</h2><p class="muted small">Video call, right now, inside Hooky. Face on, keep it appropriate, and you can hang up any time.</p></div>
-      <div class="row"><button class="btn ghost" id="decline">Not now</button><button class="btn lime" id="accept">📹 Go live</button></div>`, { sticky: true, onMount: () => {
+    modal(`<div class="ringing">${avatarHtml(m.user, "lg")}<h2>${esc(m.user.name)} wants to ${p.mode === "voice" ? "talk" : "go live"}</h2><p class="muted small">${p.mode === "voice" ? "Voice call" : "Video call"}, right now, inside Hooky. Keep it appropriate, and you can hang up any time.</p></div>
+      <div class="row"><button class="btn ghost" id="decline">Not now</button><button class="btn lime" id="accept">${p.mode === "voice" ? "📞 Answer" : "📹 Go live"}</button></div>`, { sticky: true, onMount: () => {
       $("#decline").onclick = async () => { closeModal(); await store.answerCall(p.matchId, p.from, false); };
-      $("#accept").onclick = async () => { closeModal(); await store.answerCall(p.matchId, p.from, true); startCall(m, false); };
+      $("#accept").onclick = async () => { closeModal(); await store.answerCall(p.matchId, p.from, true); startCall(m, false, p.mode); };
     } });
   });
 
-  function startCall(m, isCaller) {
+  function startCall(m, isCaller, mode) {
     state.inCall = true;
-    window.HookyCall.start({ store, me: state.me, other: m.user, matchId: m.id, isCaller,
+    window.HookyCall.start({ store, me: state.me, other: m.user, matchId: m.id, isCaller, mode,
       onEnd: async ({ seconds, reason }) => {
         state.inCall = false;
-        if (seconds > 0) await store.addSystemMessage(m.id, `Live call · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
+        const kind = mode === "voice" ? "Voice call" : "Video call";
+        if (seconds > 0) await store.addSystemMessage(m.id, `${kind} · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
         if (reason !== "report") toast(seconds ? "Call ended" : "Couldn't connect");
         if (state.chatId === m.id) openChat(m.id);
       },
@@ -89,21 +90,37 @@
     });
   }
 
-  async function ringUser(m) {
+  // mode is "voice" or "video". Voice never asks for the camera at all.
+  async function ringUser(m, mode) {
     if (!store.isOnline(m.userId)) return toast(`${m.user.name} isn't online right now`);
-    modal(`<h2>Go live with ${esc(m.user.name)}?</h2>
-      <p class="muted small">A video call inside Hooky. Nothing is recorded, nothing is saved.</p>
-      <div class="notice">Face on. Keep it appropriate. If anyone asks you to do something on camera you don't want to, hang up and hit report. You're never in trouble for ending a call.</div><br>
-      <button class="btn lime" id="ring">📹 Ring ${esc(m.user.name)}</button>`, () => {
+    const voice = mode === "voice";
+    modal(`<h2>${voice ? "Voice call" : "Video call"} with ${esc(m.user.name)}?</h2>
+      <p class="muted small">${voice
+        ? "Audio only, inside Hooky. Your camera stays off."
+        : "A video call inside Hooky."} Nothing is recorded, nothing is saved.</p>
+      <div class="notice">${voice ? "Keep it appropriate." : "Face on. Keep it appropriate."} If anyone asks you to do or say something you don't want to, hang up and hit report. You're never in trouble for ending a call.</div><br>
+      <button class="btn lime" id="ring">${voice ? "📞" : "📹"} Ring ${esc(m.user.name)}</button>`, () => {
       $("#ring").onclick = async () => {
         modal(`<div class="ringing">${avatarHtml(m.user, "lg")}<h2>Ringing ${esc(m.user.name)}…</h2><p class="muted small">They have 30 seconds to pick up.</p></div><button class="btn ghost" id="cancel">Cancel</button>`, { sticky: true, onMount: () => { $("#cancel").onclick = () => { closeModal(); state.cancelRing = true; }; } });
         state.cancelRing = false;
-        const res = await store.requestCall(m.id);
+        const res = await store.requestCall(m.id, mode);
         if (state.cancelRing) return;
         closeModal();
-        if (res.accepted) startCall(m, true);
+        if (res.accepted) startCall(m, true, mode);
         else toast(res.timeout ? `${m.user.name} didn't pick up` : `${m.user.name} can't right now`);
       };
+    });
+  }
+
+  function askCallKind(m) {
+    modal(`<h2>Call ${esc(m.user.name)}</h2>
+      <p class="muted small">Both of you are online.</p>
+      <div class="stack">
+        <button class="btn lime" id="cVoice">📞 Voice call</button>
+        <button class="btn primary" id="cVideo">📹 Video call</button>
+      </div>`, () => {
+      $("#cVoice").onclick = () => { closeModal(); ringUser(m, "voice"); };
+      $("#cVideo").onclick = () => { closeModal(); ringUser(m, "video"); };
     });
   }
 
@@ -225,12 +242,12 @@
         const age = S.ageFromBirthdate($("#bday").value); const info = $("#bracketInfo");
         if (age == null) return info.classList.add("hidden");
         info.classList.remove("hidden");
-        if (age < S.MIN_AGE) { info.className = "notice warn"; info.textContent = "Hooky is for people 13 and up."; return; }
-        const b = S.bracketForAge(age);
+        if (age < S.MIN_AGE) { info.className = "notice warn"; info.textContent = `Hooky is for people  to .`; return; }
+        const b = S.ageBand(age);
 
         if (!b) { info.className = "notice warn"; info.textContent = "That birthday doesn't look right."; return; }
 
-        info.className = "notice"; info.textContent = `You'll be in the ${b.label} group. You'll only see and be seen by people in that group.`;
+        info.className = "notice"; info.textContent = `You will see people aged , and only they will see you.`;
       };
       $("#bday").oninput = upd; upd();
     }
@@ -242,11 +259,11 @@
         img.onload = () => {
           const c = document.createElement("canvas"); const s = 512; c.width = c.height = s; const ctx = c.getContext("2d");
           const m = Math.min(img.width, img.height); ctx.drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, s, s);
-          d.photo = c.toDataURL("image/jpeg", 0.8); URL.revokeObjectURL(url); renderOnboarding();
+          d.photo = c.toDataURL("image/jpeg", 0.8); d.photoPending = true; URL.revokeObjectURL(url); renderOnboarding();
         };
         img.src = url;
       };
-      $("#rmPhoto") && ($("#rmPhoto").onclick = () => { delete d.photo; renderOnboarding(); });
+      $("#rmPhoto") && ($("#rmPhoto").onclick = () => { delete d.photo; d.photoRemoved = true; renderOnboarding(); });
     }
     if (step === "interests") {
       $("#tags").onclick = (e) => { const b = e.target.closest("[data-t]"); if (!b) return; d.tags = d.tags || []; const t = b.dataset.t; d.tags = d.tags.includes(t) ? d.tags.filter((x) => x !== t) : [...d.tags, t].slice(0, 8); b.classList.toggle("on", d.tags.includes(t)); };
@@ -279,7 +296,7 @@
         const v = $("#bday").value; const age = S.ageFromBirthdate(v);
         if (age == null) return (err.textContent = "Enter your birthday.");
         if (age < S.MIN_AGE) return (err.textContent = "Sorry, you have to be 13 or older to use Hooky.");
-        if (age > 100) return (err.textContent = "That doesn't look right.");
+        if (age > S.MAX_AGE) return (err.textContent = `Hooky is for  to  year olds.`);
         d.birthdate = v;
       }
       if (step === "name") {
@@ -300,6 +317,11 @@
         try {
           // The profile has to exist before the server can attach a verdict to it.
           state.me = await store.saveMe(d);
+          if (d.photoPending && d.photo) {
+            btn.textContent = "Checking photo…";
+            await store.submitPhoto(d.photo);
+            d.photoPending = false;
+          }
           btn.textContent = "Checking…";
           const frames = await captureFrames();
           state.stopCam && state.stopCam(); state.stopCam = null;
@@ -349,8 +371,8 @@
     const onlineCount = cands.filter((c) => c.online).length;
     if (state.onlineOnly) cands = cands.filter((c) => c.online);
     const left = await store.likesRemaining();
-    const b = S.bracketForAge(me.age);
-    screen.innerHTML = `<div class="topbar"><img class="brand-img" src="assets/wordmark.png" alt="hooky"><span class="pill">${b.label}</span><div class="grow"></div>
+    const b = S.ageBand(me.age);
+    screen.innerHTML = `<div class="topbar"><img class="brand-img" src="assets/wordmark.png" alt="hooky"><span class="pill">sees ${b.label}</span><div class="grow"></div>
         <button class="toggle ${state.onlineOnly ? "on" : ""}" id="onlineOnly"><span class="dot on"></span>${onlineCount} online</button>
         ${me.premium ? `<span class="pill plus">PLUS</span>` : ""}</div>
       <div class="deck-wrap">
@@ -432,7 +454,7 @@
     $("#app").appendChild(el);
     $("#later", el).onclick = () => el.remove();
     $("#say", el).onclick = () => { el.remove(); openChat(match.id); };
-    $("#live", el) && ($("#live", el).onclick = async () => { el.remove(); const m = (await store.matches()).find((x) => x.id === match.id); openChat(match.id); ringUser(m); });
+    $("#live", el) && ($("#live", el).onclick = async () => { el.remove(); const m = (await store.matches()).find((x) => x.id === match.id); openChat(match.id); askCallKind(m); });
   }
 
   async function renderWhoLiked() {
@@ -462,22 +484,121 @@
       ${online.length ? `<div class="section">Online now</div><div class="online-row">${online.map((m) => `<button data-open="${m.id}">${avatarHtml(m.user, "", true)}<span>${esc(m.user.name)}</span></button>`).join("")}</div>` : ""}
       ${fresh.length ? `<div class="section">New catches</div><div class="new-matches">${fresh.map((m) => `<button data-open="${m.id}">${avatarHtml(m.user)}<span>${esc(m.user.name)}</span></button>`).join("")}</div>` : ""}
       <div class="list">${ms.filter((m) => m.last).map((m) => `<button class="item" data-open="${m.id}">${avatarHtml(m.user, "", m.online)}<div><div class="name">${esc(m.user.name)}</div><div class="preview">${m.last.from === "me" ? "You: " : ""}${esc(m.last.text)}</div></div>${m.unread ? `<span class="badge" style="position:static">${m.unread}</span>` : ""}<span class="time">${timeAgo(m.last.at)}</span></button>`).join("")}</div>
+      <div class="pad"><button class="btn ghost" id="rooms">🏠 Private rooms</button></div>
       ${!ms.length ? `<div class="empty"><div><div class="big">💬</div><h3>No catches yet</h3><p class="small">When you and someone hook each other, you'll chat here. When you're both online, you can go live.</p></div></div>` : ""}`;
     screen.onclick = (e) => { const b = e.target.closest("[data-open]"); if (b) openChat(b.dataset.open); };
+    $("#rooms").onclick = renderRooms;
+  }
+
+  // ---------- private rooms ----------
+  // A room is pinned to its creator's age window, so it can never become a way
+  // to reach people outside the range you could already see.
+  async function renderRooms() {
+    screen.onclick = null;
+    const me = state.me = await store.getMe();
+    const allowed = await store.roomsAllowed();
+    let list = [];
+    try { list = await store.browseRooms(); } catch (e) { toast(e.message); }
+    const mine = list.filter((r) => r.mine);
+
+    screen.innerHTML = `<div class="topbar"><button class="iconbtn" id="back">‹</button><h2 style="margin:0">Rooms</h2></div>
+      <div class="pad stack">
+        <p class="muted small">Group chats on one topic. You only see rooms made by people in your own age range.</p>
+        ${allowed
+          ? `<button class="btn lime" id="new">＋ New room (${mine.length} of ${allowed} used)</button>`
+          : `<div class="plus-hero"><h3>Rooms are a paid feature</h3><p class="small muted">Hooky+ gives you one room. Hooky Max gives you five.</p><button class="btn lime" id="getPlus">See plans</button></div>`}
+        ${list.length ? list.map((r) => `
+          <div class="room-card">
+            <div class="room-topic">${esc(r.topic)}</div>
+            <div class="room-meta">by ${esc(r.owner_name)} · ${r.members} in here · ages ${r.age_lo}–${r.age_hi}</div>
+            <div class="room-actions">
+              <button class="btn sm ${r.joined ? "primary" : "ghost"}" data-open="${r.id}">${r.joined ? "Open" : "Join"}</button>
+              ${r.mine ? `<button class="btn sm danger" data-close="${r.id}">Close</button>`
+                       : r.joined ? `<button class="btn sm ghost" data-leave="${r.id}">Leave</button>` : ""}
+            </div>
+          </div>`).join("")
+          : `<div class="empty"><div><div class="big">🏠</div><h3>No rooms yet</h3><p class="small">Nobody in your age range has started one. ${allowed ? "You could be first." : ""}</p></div></div>`}
+      </div>`;
+
+    $("#back").onclick = () => showTab("matches");
+    $("#getPlus") && ($("#getPlus").onclick = () => renderPlus("Private rooms come with Hooky+"));
+    $("#new") && ($("#new").onclick = () => {
+      modal(`<h2>New room</h2>
+        <p class="muted small">Give it a topic. Anyone in your age range can find and join it.</p>
+        <div class="field"><label>Topic</label><input id="topic" class="input" maxlength="60" placeholder="late night study group"></div>
+        <div id="rErr" class="error"></div>
+        <button class="btn lime" id="make">Create room</button>`, () => {
+        $("#make").onclick = async () => {
+          const topic = $("#topic").value.trim();
+          if (topic.length < 3) return ($("#rErr").textContent = "Give it a topic.");
+          $("#make").disabled = true;
+          try { await store.createRoom(topic); closeModal(); toast("Room created"); renderRooms(); }
+          catch (e) { $("#make").disabled = false; $("#rErr").textContent = e.message; }
+        };
+      });
+    });
+
+    screen.onclick = async (e) => {
+      const open = e.target.closest("[data-open]");
+      const leave = e.target.closest("[data-leave]");
+      const close = e.target.closest("[data-close]");
+      if (open) {
+        const r = list.find((x) => x.id === open.dataset.open);
+        if (!r.joined) { try { await store.joinRoom(r.id); } catch (err) { return toast(err.message); } }
+        return openRoom(r.id, r.topic);
+      }
+      if (leave) { await store.leaveRoom(leave.dataset.leave); renderRooms(); }
+      if (close) {
+        modal(`<h2>Close this room?</h2><p class="muted">Everyone is removed and the messages go with it.</p><button class="btn danger" id="yes">Close it</button><br><br><button class="btn ghost" id="no">Keep it</button>`, () => {
+          $("#no").onclick = closeModal;
+          $("#yes").onclick = async () => { await store.closeRoom(close.dataset.close); closeModal(); renderRooms(); };
+        });
+      }
+    };
+  }
+
+  async function openRoom(id, topic) {
+    screen.onclick = null;
+    const me = state.me;
+    setTabsVisible(false);
+    screen.innerHTML = `<div class="topbar"><button class="iconbtn" id="back">‹</button><div class="who"><div style="font-weight:700">${esc(topic)}</div><div class="tiny muted">Private room</div></div></div>
+      <div class="chat"><div class="room-msgs" id="rmsgs"></div>
+      <form class="composer" id="rform"><input id="rtxt" class="input" placeholder="Message the room…" autocomplete="off" maxlength="500"><button class="send" type="submit">➤</button></form></div>`;
+    const box = $("#rmsgs");
+    let alive = true;
+    async function load() {
+      if (!alive) return;
+      const msgs = await store.roomMessages(id);
+      box.innerHTML = `<div class="msg sys">🎣 Same rules as anywhere on Hooky. Report anyone who breaks them.</div>` +
+        msgs.map((m) => `<div class="room-msg ${m.mine ? "me" : ""}">${m.mine ? "" : `<div class="who">${esc(m.sender_name)}</div>`}<div class="bubble">${esc(m.body)}</div></div>`).join("");
+      box.scrollTop = box.scrollHeight;
+    }
+    const unsub = store.subscribeRoom(id, load);
+    $("#back").onclick = () => { alive = false; unsub && unsub(); setTabsVisible(true); renderRooms(); };
+    $("#rform").onsubmit = async (e) => {
+      e.preventDefault();
+      const t = $("#rtxt").value.trim(); if (!t) return;
+      try {
+        const res = await store.roomSend(id, t);
+        if (res.blocked) return modal(`<h2>Hold up</h2><p>That message looks like it shares ${esc(res.reasons.join(", "))}. Rooms that include anyone under 18 keep conversations on Hooky.</p><button class="btn primary" id="ok">Got it</button>`, () => { $("#ok").onclick = closeModal; });
+        $("#rtxt").value = ""; load();
+      } catch (err) { toast(err.message); }
+    };
+    load();
   }
 
   async function openChat(matchId) {
     screen.onclick = null; state.chatId = matchId;
     const m = (await store.matches()).find((x) => x.id === matchId); if (!m) return showTab("matches");
     const u = m.user; const me = state.me;
-    const strict = S.bracketForAge(me.age).minor;
+    const strict = S.isMinor(me.age);
     const online = store.isOnline(u.id);
     screen.innerHTML = `<div class="topbar"><button class="iconbtn" id="back">‹</button>${avatarHtml(u, "", online)}<div class="who"><div style="font-weight:700">${esc(u.name)}, ${u.age}</div><div class="tiny ${online ? "" : "muted"}" style="${online ? "color:var(--ok)" : ""}">${online ? "Online now" : "Offline"}</div></div><div class="grow"></div>
         <button class="iconbtn" id="video" title="Go live" style="${online ? "background:rgba(74,222,128,0.15)" : "opacity:.45"}">📹</button><button class="iconbtn" id="more">⋯</button></div>
       <div class="chat"><div class="msgs" id="msgs"></div>
       <form class="composer" id="form"><input id="txt" class="input" placeholder="Message ${esc(u.name)}…" autocomplete="off" maxlength="500"><button class="send" type="submit">➤</button></form></div>`;
     $("#back").onclick = () => { unsub(); showTab("matches"); };
-    $("#video").onclick = () => ringUser(m);
+    $("#video").onclick = () => askCallKind(m);
     $("#more").onclick = () => modal(`<h2>${esc(u.name)}</h2><div class="stack"><button class="btn ghost" id="rep">⚑ Report</button><button class="btn danger" id="blk">Block ${esc(u.name)}</button></div>`, () => {
       $("#rep").onclick = () => { closeModal(); openReport(u, () => { unsub(); showTab("matches"); }); };
       $("#blk").onclick = async () => { await store.block(u.id); closeModal(); unsub(); toast("Blocked"); showTab("matches"); };
@@ -504,19 +625,19 @@
   // ---------- profile ----------
   async function renderProfile() {
     const me = state.me = await store.getMe();
-    const b = S.bracketForAge(me.age);
+    const b = S.ageBand(me.age);
     const blocked = await store.blocked();
     screen.innerHTML = `<div class="topbar"><h2 style="margin:0">Me</h2><div class="grow"></div>${me.premium ? `<span class="pill plus">PLUS</span>` : ""}</div>
       <div class="pad stack">
-        <div class="row">${avatarHtml(me, "lg")}<div><h2 style="margin:0">${esc(me.name)}, ${me.age}</h2><div class="muted small">📍 ${esc(me.region || "")}</div><div class="row" style="margin-top:6px"><span class="pill">${b.label}</span><span class="pill ${me.verification ? "ok" : "pending"}">${me.verification ? "✓ age checked" : "not checked"}</span></div></div></div>
+        <div class="row">${avatarHtml(me, "lg")}<div><h2 style="margin:0">${esc(me.name)}, ${me.age}</h2><div class="muted small">📍 ${esc(me.region || "")}</div><div class="row" style="margin-top:6px"><span class="pill">sees ${b.label}</span><span class="pill ${me.verification ? "ok" : "pending"}">${me.verification ? "✓ age checked" : "not checked"}</span></div></div></div>
         <p class="small">${esc(me.bio || "")}</p>
         <div class="chips">${(me.tags || []).map((t) => `<span class="chip on">${esc(t)}</span>`).join("")}</div>
         <button class="btn ghost" id="edit">Edit profile</button>
         ${me.premium ? "" : `<div class="plus-hero"><h3>Hooky+</h3><p class="small muted">Unlimited hooks, see who hooked you, undo passes.</p><button class="btn lime" id="plus">See plans</button></div>`}
         <div class="card-box">
           <h3>Safety</h3>
-          <div class="setting"><span>Age group</span><span class="muted small">${b.label} (locked)</span></div>
-          <div class="setting"><span>Who can see me</span><span class="muted small">Only my age group</span></div>
+          <div class="setting"><span>I can see ages</span><span class="muted small">${b.label}</span></div>
+          <div class="setting"><span>Who can see me</span><span class="muted small">Ages ${b.label} only</span></div>
           <div class="setting"><span>I am</span><span class="muted small">${esc((GENDERS.find((g) => g.id === me.gender) || {}).label || "not set")}</span></div>
           <div class="setting"><span>Show me</span><span class="muted small">${esc((me.showMe || ALL_GENDERS).map((g) => (GENDERS.find((x) => x.id === g) || {}).label).filter(Boolean).join(", ") || "everyone")}</span></div>
           <div class="setting"><span>Live calls</span><span class="muted small">Catches only, both online</span></div>
@@ -587,7 +708,7 @@
               <div class="chips" id="showMe">${GENDERS.map((g) => `<button class="chip ${(d.showMe || []).includes(g.id) ? "on" : ""}" data-s="${g.id}">${esc(g.label)}</button>`).join("")}</div>
             </div>
             <p class="tiny muted">Matching is mutual: you both have to be in each other's "show me" to appear.</p>
-            <div class="setting"><span>Age group</span><span class="muted small">${S.bracketForAge(me.age).label} · locked</span></div>
+            <div class="setting"><span>Age group</span><span class="muted small">${S.ageBand(me.age).label} · locked</span></div>
             <div class="setting"><span>Birthday</span><span class="muted small">${esc(me.birthdate || "")} · can't change</span></div>
           </div>
 
@@ -596,8 +717,8 @@
         </div>`;
 
       $("#back").onclick = () => showTab("profile");
-      $("#emojis").onclick = (e) => { const b = e.target.closest("[data-e]"); if (!b) return; d.emoji = b.dataset.e; delete d.photo; paint(); };
-      $("#rmPhoto") && ($("#rmPhoto").onclick = () => { delete d.photo; paint(); });
+      $("#emojis").onclick = (e) => { const b = e.target.closest("[data-e]"); if (!b) return; d.emoji = b.dataset.e; if (d.photo) d.photoRemoved = true; delete d.photo; paint(); };
+      $("#rmPhoto") && ($("#rmPhoto").onclick = () => { delete d.photo; d.photoRemoved = true; paint(); });
       $("#photoIn").onchange = (e) => {
         const f = e.target.files[0]; if (!f) return;
         const img = new Image(); const url = URL.createObjectURL(f);
@@ -605,7 +726,7 @@
           const c = document.createElement("canvas"); const s = 512; c.width = c.height = s;
           const ctx = c.getContext("2d"); const m = Math.min(img.width, img.height);
           ctx.drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, s, s);
-          d.photo = c.toDataURL("image/jpeg", 0.8); URL.revokeObjectURL(url); paint();
+          d.photo = c.toDataURL("image/jpeg", 0.8); d.photoPending = true; URL.revokeObjectURL(url); paint();
         };
         img.src = url;
       };
@@ -634,6 +755,17 @@
         $("#save").disabled = true; $("#save").textContent = "Saving…";
         try {
           state.me = await store.saveMe(d);
+          // Photos go through moderation separately; the server is the only
+          // thing that can publish one.
+          if (d.photoPending && d.photo) {
+            $("#save").textContent = "Checking photo…";
+            await store.submitPhoto(d.photo);
+            d.photoPending = false;
+          } else if (d.photoRemoved) {
+            await store.submitPhoto(null);
+            d.photoRemoved = false;
+          }
+          state.me = await store.getMe();
           toast("Saved"); showTab("profile");
         } catch (e2) {
           $("#save").disabled = false; $("#save").textContent = "Save changes";
@@ -644,27 +776,59 @@
     paint();
   }
 
-  // ---------- Hooky+ (paid tier) ----------
+  // ---------- subscriptions ----------
+  // Two tiers, three billing periods, and under-18 accounts pay less on every
+  // one of them. The age price is chosen from the verified birthdate, not from
+  // anything the client can set on its own.
   function renderPlus(reason) {
     if (typeof reason !== "string") reason = "";
-    let plan = "year";
-    const paint = () => modal(`<div class="plus-hero"><h2>Hooky+</h2><p class="muted small">${esc(reason || "More ways to meet people your age.")}</p></div><br>
-      <div class="perk"><span class="ico">♾️</span><div><b>Unlimited hooks</b><div class="muted small">Free accounts get ${FREE_DAILY_LIKES} a day.</div></div></div>
-      <div class="perk"><span class="ico">👀</span><div><b>See who hooked you</b><div class="muted small">Catch them instantly instead of waiting.</div></div></div>
-      <div class="perk"><span class="ico">↶</span><div><b>Undo a pass</b><div class="muted small">Swiped too fast? Bring them back.</div></div></div>
-      <div class="perk"><span class="ico">🎨</span><div><b>Profile flair</b><div class="muted small">Animated borders and more emoji.</div></div></div><br>
-      <div class="plans">
-        <button class="plan ${plan === "month" ? "on" : ""}" data-p="month"><div class="muted tiny">Monthly</div><div class="price">$4.99</div><div class="tiny muted">per month</div></button>
-        <button class="plan ${plan === "year" ? "on" : ""}" data-p="year"><div class="muted tiny">Yearly</div><div class="price">$29.99</div><div class="save">save 50%</div></button>
-      </div><br>
-      <button class="btn lime" id="buy">Continue</button>
-      <p class="tiny muted center" style="margin-top:10px">Billed through your phone's app store. Cancel anytime. Live calls and safety features are always free.</p>`, () => {
-      modalRoot.querySelectorAll("[data-p]").forEach((b) => (b.onclick = () => { plan = b.dataset.p; paint(); }));
-      $("#buy").onclick = async () => {
-        if (store.kind === "local") { await store.setPremium(true); closeModal(); buzz([30, 30, 30]); toast("Hooky+ unlocked (demo)"); showTab(state.tab); }
-        else toast("Purchases go through your phone's app store in the mobile build.");
-      };
-    });
+    const me = state.me || {};
+    const teen = S.isMinor(me.age);
+    let tierId = me.tier === "max" ? "max" : "plus";
+    let periodId = "year";
+
+    const paint = () => {
+      const tier = S.TIERS.find((t) => t.id === tierId);
+      const monthly = S.priceFor(tierId, "month", me.age);
+      const rows = S.PERIODS.map((p) => {
+        const price = S.priceFor(tierId, p.id, me.age);
+        const perMonth = price / p.months;
+        const save = Math.round((1 - perMonth / monthly) * 100);
+        return `<button class="plan-row ${periodId === p.id ? "on" : ""}" data-p="${p.id}">
+          <div><div style="font-weight:700">${p.label}</div>
+            <div class="per">$${perMonth.toFixed(2)} a month${save > 0 ? ` · save ${save}%` : ""}</div></div>
+          <div class="price">$${price.toFixed(2)}</div>
+        </button>`;
+      }).join("");
+
+      modal(`<div class="plus-hero">
+          <div class="row" style="justify-content:space-between">
+            <h2 style="margin:0">${esc(tier.name)}</h2>
+            ${teen ? `<span class="teen-badge">UNDER 18 PRICE</span>` : ""}
+          </div>
+          <p class="muted small" style="margin:6px 0 0">${esc(reason || tier.blurb)}</p>
+        </div><br>
+        <div class="seg" id="tiers">${S.TIERS.map((t) => `<button class="${tierId === t.id ? "on" : ""}" data-t="${t.id}">${esc(t.name)}</button>`).join("")}</div><br>
+        ${tier.perks.map(([ico, title, sub]) => `<div class="perk"><span class="ico">${ico}</span><div><b>${esc(title)}</b><div class="muted small">${esc(sub)}</div></div></div>`).join("")}
+        <br><div class="stack" id="periods">${rows}</div><br>
+        <button class="btn lime" id="buy">Continue</button>
+        <p class="tiny muted center" style="margin-top:10px">${teen
+          ? "Under-18 pricing is applied automatically from your birthday."
+          : "Standard pricing."} Billed through your phone's app store. Cancel anytime. Live calls and every safety feature stay free.</p>`, () => {
+        $("#tiers").onclick = (e) => { const b = e.target.closest("[data-t]"); if (b) { tierId = b.dataset.t; paint(); } };
+        $("#periods").onclick = (e) => { const b = e.target.closest("[data-p]"); if (b) { periodId = b.dataset.p; paint(); } };
+        $("#buy").onclick = async () => {
+          if (store.kind === "local") {
+            await store.setPremium(true, tierId);
+            closeModal(); buzz([30, 30, 30]);
+            toast(`${tier.name} unlocked (demo)`);
+            showTab(state.tab);
+          } else {
+            toast("Purchases go through your phone's app store in the mobile build.");
+          }
+        };
+      });
+    };
     paint();
   }
 

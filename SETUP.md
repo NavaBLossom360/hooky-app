@@ -136,8 +136,11 @@ Stripe's `current_period_end` and Apple's `expiresDate`. That makes retries
 harmless. If you only have a duration, send `period_months` plus a unique
 `event_id`, which is recorded so a replayed delivery is not credited twice.
 
-`BILLING_WEBHOOK_SECRET` is already set in Edge Functions -> Secrets. **Rotate
-it before real use**, since it was generated during development. For App Store
+`BILLING_WEBHOOK_SECRET` is set in Edge Functions -> Secrets. The current value
+is also saved locally at `.secrets/billing-webhook-secret.txt`, which is
+gitignored, because Supabase masks secret values once saved and will not show
+them again. **Rotate it once more yourself before real use**, to a value that
+has never passed through a development session. For App Store
 and Play, verify their own signed payloads instead of the shared secret, or let
 RevenueCat map products to tiers and post a plain webhook here.
 

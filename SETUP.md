@@ -62,6 +62,63 @@ direct SQL access from outside the dashboard.
 4. Copy `config.example.js` to `config.js` and fill in the project URL and
    publishable key from **Project Settings → API Keys**.
 
+## Age range
+
+Hooky is for 13 to 25. Matching uses a sliding window rather than fixed buckets:
+under 18 you never see past 18, and from 18 up you never see below 17. Those
+clamps meet in exactly one place, so **17 and 18 can see each other and no other
+minor/adult pair can**. Verified against the live database:
+
+| Pair | Allowed |
+| --- | --- |
+| 17 and 18 | yes |
+| 16 and 18 | no |
+| 17 and 19 | no |
+| 20 and 17 | no |
+| Over 25 | cannot sign up |
+
+## Photo moderation
+
+The `photo-check` function is the only thing that can write
+`profiles.photo_url`. The profiles trigger blocks clients from setting it, so a
+modified client cannot publish a photo that skipped moderation. A photo is
+accepted only if a nudity classifier scores it below the threshold **and** a
+face is detected, because a profile photo should be of you.
+
+This is a nudity classifier, **not** CSAM detection. A real teen app also needs
+hash-matching against known material and a human review queue. Both need
+accounts and legal agreements, so neither is wired up.
+
+## Private rooms
+
+Paid accounts can open group rooms on a topic they type. Hooky+ gets one room,
+Hooky Max gets five. A room is pinned to its creator's age window, so it can
+never become a way to reach outside that range. Room topics pass the same filter
+as messages, and any room whose range reaches under 18 gets the strict filter.
+
+## Calls
+
+Calls can be voice or video, chosen when you ring someone. A voice call never
+requests the camera. Both run peer to peer over WebRTC with signalling on a
+per-match realtime channel, and neither is recorded.
+
+## Subscriptions
+
+Two tiers and three billing periods, with under-18 pricing on all six.
+
+| Plan | Under 18 | 18 and over |
+| --- | --- | --- |
+| Hooky+ monthly | $2.99 | $4.99 |
+| Hooky+ 3 months | $7.99 | $12.99 |
+| Hooky+ yearly | $19.99 | $29.99 |
+| Max monthly | $5.99 | $9.99 |
+| Max 3 months | $14.99 | $24.99 |
+| Max yearly | $39.99 | $59.99 |
+
+The age price comes from the stored birthdate, not from anything the client
+sets. Payments are still not wired up: `premium_until` and `premium_tier` are
+only writable by trusted server code.
+
 ## Age verification
 
 The `age-check` Edge Function is deployed and is the only thing that can write
@@ -126,8 +183,8 @@ from the in-app Settings screen.
 
 Two more placeholders, marked in `supabase/schema.sql`:
 
-- **Photo moderation does not exist.** Photos are stored on the profile with no
-  classifier in front of them.
+- **Photo moderation is a nudity classifier, not CSAM detection.** Known-material
+  hash matching and a human review queue are still missing.
 - **Payments are not wired.** `premium_until` is only writable by trusted server
   code, so Hooky+ stays off until a store webhook sets it.
 

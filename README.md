@@ -59,7 +59,8 @@ through the phone's app store billing. Safety features and live calls are never 
 
 ## Safety design
 
-- Teens only see and are seen by their own age group. Enforced by RLS.
+- Ages 13 to 25, matched on a sliding window. 17 and 18 can see each other; no
+  other minor/adult pair can. Enforced in the database.
 - Gender preference is mutual: you each have to be in the other person's "show
   me" list to appear. Enforced in the discovery functions and inside `swipe()`.
 - Age verification is written only by a server-side Edge Function, never by the

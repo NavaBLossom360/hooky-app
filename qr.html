@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Hooky QR</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    body { margin: 0; background: #07050f; color: #f4f1ff; font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; }
+    #out { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="card" width="720" height="960"></canvas>
+  <div id="out"></div>
+  <script>
+    const URL_TO_ENCODE = "https://navablossom360.github.io/hooky-app/";
+
+    function makeQr(text, size) {
+      const holder = document.getElementById("out");
+      holder.innerHTML = "";
+      new QRCode(holder, { text, width: size, height: size, correctLevel: QRCode.CorrectLevel.M });
+      return new Promise((resolve) => {
+        const check = () => {
+          const c = holder.querySelector("canvas");
+          const i = holder.querySelector("img");
+          if (c) return resolve(c);
+          if (i && i.complete && i.naturalWidth) return resolve(i);
+          setTimeout(check, 50);
+        };
+        check();
+      });
+    }
+
+    async function render() {
+      const cv = document.getElementById("card");
+      const ctx = cv.getContext("2d");
+      const W = cv.width, H = cv.height;
+
+      // Background
+      ctx.fillStyle = "#0f0b1e"; ctx.fillRect(0, 0, W, H);
+      let g = ctx.createRadialGradient(W * 0.2, H * 0.08, 0, W * 0.2, H * 0.08, W);
+      g.addColorStop(0, "rgba(255,79,139,0.35)"); g.addColorStop(1, "rgba(255,79,139,0)");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      g = ctx.createRadialGradient(W * 0.9, H, 0, W * 0.9, H, W);
+      g.addColorStop(0, "rgba(139,92,246,0.4)"); g.addColorStop(1, "rgba(139,92,246,0)");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+      // Wordmark
+      const wm = new Image();
+      await new Promise((r) => { wm.onload = r; wm.onerror = r; wm.src = "assets/wordmark.png"; });
+      if (wm.naturalWidth) {
+        const ww = 380, wh = ww * (wm.naturalHeight / wm.naturalWidth);
+        ctx.drawImage(wm, (W - ww) / 2, 70, ww, wh);
+      }
+
+      // QR on a white rounded plate (scanners need the light quiet zone)
+      const qr = await makeQr(URL_TO_ENCODE, 460);
+      const plate = 520, px = (W - plate) / 2, py = 250;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.roundRect(px, py, plate, plate, 40); ctx.fill();
+      ctx.drawImage(qr, px + 30, py + 30, plate - 60, plate - 60);
+
+      // Caption
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#f4f1ff"; ctx.font = "800 38px system-ui, sans-serif";
+      ctx.fillText("Scan with your phone camera", W / 2, py + plate + 80);
+      ctx.fillStyle = "#a79fc4"; ctx.font = "400 26px system-ui, sans-serif";
+      ctx.fillText("navablossom360.github.io/hooky-app", W / 2, py + plate + 126);
+      ctx.fillStyle = "#c8ff4f"; ctx.font = "600 24px system-ui, sans-serif";
+      ctx.fillText("Then: Share → Add to Home Screen", W / 2, py + plate + 176);
+
+      document.title = "Hooky QR (ready)";
+    }
+
+    async function upload() {
+      const b64 = document.getElementById("card").toDataURL("image/png").split(",")[1];
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const r = await fetch("/upload?name=qr-hooky.png", { method: "POST", body: bytes });
+      return r.status;
+    }
+    render();
+  </script>
+</body>
+</html>

@@ -131,3 +131,29 @@ Steps, on a Mac with Xcode for iOS (Android works from Windows):
 
 Regenerate the icons any time by opening `logo.html` on the dev server and
 clicking "Download all PNGs".
+
+## Test it on your phone
+
+The app is live at **https://navablossom360.github.io/hooky-app/** (GitHub Pages,
+served over HTTPS from the `main` branch). Anything pushed to `main` appears
+there within a minute or so.
+
+Open that link on your phone, then install it so it behaves like a real app:
+
+- **iPhone (Safari):** tap Share, then "Add to Home Screen".
+- **Android (Chrome):** tap the three-dot menu, then "Install app" or
+  "Add to Home screen".
+
+It then launches full-screen with the Hooky icon, no browser bar.
+
+HTTPS matters here: the camera, the microphone, and the service worker all
+refuse to run over plain `http://`, so testing over a local network IP will not
+let you try the selfie step or a live call. Use the Pages URL.
+
+`qr.html` renders a scannable QR card for the Pages URL. Open it on the dev
+server and call `upload()` from the console to save it to `assets/`.
+
+**What works in this build:** everything except a real second person. The app is
+in demo mode with seeded profiles, so live calls show your own camera with a
+placeholder for the other person. Point `config.js` at a Supabase project to get
+real accounts, real presence, and real peer-to-peer calls.

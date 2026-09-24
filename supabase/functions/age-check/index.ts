@@ -13,6 +13,8 @@
 // MEASURED ACCURACY of the local model, cropped to a detected face:
 //   baby (1)  -> 1     elderly (~70) -> 79
 //   teen (16) -> 8     teen (17)     -> 28
+// Each call costs roughly two seconds and both models are cached in memory
+// between invocations.
 // So it is reliable at the extremes and off by roughly 10 years either way for
 // teenagers. The slack below is set wide enough not to lock out real teens,
 // which means it catches an obvious adult claiming to be 14 but will NOT catch
@@ -25,7 +27,12 @@
 //             AWS_SECRET_ACCESS_KEY, AWS_REGION. More accurate, costs money.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import * as ort from "https://esm.sh/onnxruntime-web@1.19.2";
+// 1.14 on purpose: later builds only ship a threaded WASM binary, and the edge
+// runtime has no SharedArrayBuffer, so they fail with "Creating a shared memory
+// is not supported". esm.sh also wraps this CJS package differently depending
+// on the target, hence the shape check below.
+import ortModule from "https://esm.sh/onnxruntime-web@1.14.0";
+const ort: any = (ortModule as any)?.env ? (ortModule as any) : ((ortModule as any)?.default ?? ortModule);
 import jpeg from "https://esm.sh/jpeg-js@0.4.4";
 
 const PROVIDER = Deno.env.get("AGE_PROVIDER") ?? "local";
@@ -83,13 +90,18 @@ function sample(img: Rgba, sx: number, sy: number, sw: number, sh: number, dw: n
 }
 
 // --------------------------------------------------------------- ONNX sessions
-let faceSession: Promise<ort.InferenceSession> | null = null;
-let ageSession: Promise<ort.InferenceSession> | null = null;
+let faceSession: Promise<any> | null = null;
+let ageSession: Promise<any> | null = null;
 function configureOrt() {
   ort.env.wasm.numThreads = 1;   // no SharedArrayBuffer in the edge runtime
-  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
+  ort.env.wasm.simd = true;
+  ort.env.wasm.proxy = false;
+  ort.env.wasm.wasmPaths = {
+    "ort-wasm.wasm": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort-wasm.wasm",
+    "ort-wasm-simd.wasm": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort-wasm-simd.wasm",
+  };
 }
-function loadSession(url: string): Promise<ort.InferenceSession> {
+function loadSession(url: string): Promise<any> {
   configureOrt();
   return (async () => {
     const res = await fetch(url);
@@ -155,7 +167,7 @@ async function estimateAge(img: Rgba, box: Box): Promise<Estimate> {
     input[2 * size * size + i] = rgb[i * 3] - MEAN_BGR[2];       // R
   }
   const session = await getAge();
-  const feeds: Record<string, ort.Tensor> = {};
+  const feeds: Record<string, any> = {};
   feeds[session.inputNames[0]] = new ort.Tensor("float32", input, [1, 3, size, size]);
   const out = await session.run(feeds);
   const probs = Array.from(out[session.outputNames[0]].data as Float32Array);

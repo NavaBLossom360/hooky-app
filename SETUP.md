@@ -115,9 +115,35 @@ Two tiers and three billing periods, with under-18 pricing on all six.
 | Max 3 months | $14.99 | $24.99 |
 | Max yearly | $39.99 | $59.99 |
 
-The age price comes from the stored birthdate, not from anything the client
-sets. Payments are still not wired up: `premium_until` and `premium_tier` are
-only writable by trusted server code.
+The age price comes from the stored birthdate, not from anything the client sets.
+
+### Wiring up payments
+
+The `billing-webhook` function is deployed and is the only thing that can grant
+or revoke a subscription, because the profiles trigger blocks clients from
+writing `premium_until` or `premium_tier`.
+
+```
+POST https://hbaimmnilujvrabktccm.supabase.co/functions/v1/billing-webhook
+x-hooky-signature: <BILLING_WEBHOOK_SECRET>
+{ "event": "activate", "user_id": "<uuid>", "tier": "plus",
+  "expires_at": "2027-06-01T00:00:00Z",
+  "provider": "stripe", "provider_ref": "sub_123" }
+```
+
+Send `expires_at` when the provider gives you an absolute period end, which is
+Stripe's `current_period_end` and Apple's `expiresDate`. That makes retries
+harmless. If you only have a duration, send `period_months` plus a unique
+`event_id`, which is recorded so a replayed delivery is not credited twice.
+
+`BILLING_WEBHOOK_SECRET` is already set in Edge Functions -> Secrets. **Rotate
+it before real use**, since it was generated during development. For App Store
+and Play, verify their own signed payloads instead of the shared secret, or let
+RevenueCat map products to tiers and post a plain webhook here.
+
+Verified against the live function: a wrong signature is rejected, an unknown
+user 404s, a replayed `event_id` is a no-op, and a repeated `expires_at` gives
+an identical result.
 
 ## Age verification
 

@@ -252,6 +252,9 @@ $$;
 -- Visibility is mutual: they must match who I want to see, and I must match who
 -- they want to see. A profile with no gender set yet is shown to nobody, which
 -- keeps half-finished signups out of the deck.
+-- Dropped first: the return type gained a gender column, and CREATE OR REPLACE
+-- cannot change a function's output columns.
+drop function if exists discover_candidates(int);
 create or replace function discover_candidates(lim int default 20)
 returns table (id uuid, display_name text, age int, emoji text, region text,
                bio text, interests text[], photo_url text, gender gender)
@@ -323,6 +326,7 @@ begin
   delete from matches where a = least(auth.uid(), target) and b = greatest(auth.uid(), target);
 end $$;
 
+drop function if exists who_liked_me();
 create or replace function who_liked_me()
 returns table (id uuid, display_name text, age int, emoji text, region text,
                bio text, interests text[], photo_url text, gender gender)

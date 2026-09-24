@@ -62,6 +62,30 @@ direct SQL access from outside the dashboard.
 4. Copy `config.example.js` to `config.js` and fill in the project URL and
    publishable key from **Project Settings → API Keys**.
 
+## Push notifications
+
+New catches and messages send a Web Push notification. Turn it on under
+**Me -> Notifications**, or accept the prompt that appears after your first
+catch. On iPhone the app must be added to the Home Screen first, because iOS
+only allows web push for installed apps.
+
+Notifications say that someone messaged you, never what they said, so nothing
+leaks onto a lock screen.
+
+The `push-send` Edge Function does the two things Web Push requires, using Web
+Crypto with no dependencies: a VAPID ES256 JWT, and RFC 8291 `aes128gcm`
+payload encryption so the push service itself cannot read the notification.
+Both were verified by round-tripping a real encrypt/decrypt and by checking the
+signature against the public key in `config.js`.
+
+It will only notify the other person in a match the caller is already part of,
+skips blocked pairs, and deletes subscriptions the browser has thrown away
+(404 or 410).
+
+Secrets it needs, under **Edge Functions -> Secrets**: `VAPID_PUBLIC_KEY`,
+`VAPID_PRIVATE_JWK`, `VAPID_SUBJECT` and `APP_URL`. The public key also ships
+in `config.js`, which is fine; it is public by design.
+
 ## Age range
 
 Hooky is for 13 to 25. Matching uses a sliding window rather than fixed buckets:

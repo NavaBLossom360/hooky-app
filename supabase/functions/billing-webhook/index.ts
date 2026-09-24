@@ -10,7 +10,7 @@
 //     "tier": "plus" | "max",
 //     "period_months": 1 | 3 | 12,          // when expires_at is absent
 //     "expires_at": "2027-01-01T00:00:00Z", // preferred: absolute period end
-//     "event_id": "<unique per delivery>",  // required without expires_at| 3 | 12,
+//     "event_id": "<unique per delivery>",  // required without expires_at
 //     "provider": "stripe" | "appstore" | "play" | ...,
 //     "provider_ref": "<subscription id, used for idempotency>" }
 //
@@ -112,8 +112,9 @@ Deno.serve(async (req) => {
   }
 
   // provider_ref is the primary key, so a provider retrying a webhook is safe.
+  const planLabel = body.expires_at ? `${tier}_until_${until.toISOString().slice(0, 10)}` : `${tier}_${period_months}m`;
   const { error: subErr } = await admin.from("subscriptions").upsert({
-    user_id, provider, provider_ref, plan: `${tier}_${months}m`, active: true,
+    user_id, provider, provider_ref, plan: planLabel, active: true,
     expires_at: until.toISOString(),
   }, { onConflict: "provider,provider_ref" });
   if (subErr) return json({ error: subErr.message }, 500);

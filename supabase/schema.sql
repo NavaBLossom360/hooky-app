@@ -223,6 +223,17 @@ create table if not exists billing_events (
   primary key (provider, event_id)
 );
 
+-- Web Push subscriptions. One row per browser or installed app, so a person
+-- with a phone and a laptop gets notified on both.
+create table if not exists push_subscriptions (
+  endpoint text primary key,
+  user_id uuid references profiles(id) on delete cascade,
+  p256dh text not null,
+  auth text not null,
+  created_at timestamptz default now()
+);
+create index if not exists push_subs_user on push_subscriptions(user_id);
+
 -- ---------- row level security ----------
 alter table profiles enable row level security;
 alter table swipes enable row level security;
@@ -233,6 +244,7 @@ alter table blocks enable row level security;
 alter table reports enable row level security;
 alter table subscriptions enable row level security;
 alter table billing_events enable row level security;
+alter table push_subscriptions enable row level security;
 alter table rooms enable row level security;
 alter table room_members enable row level security;
 alter table room_messages enable row level security;
@@ -288,6 +300,10 @@ create policy reads_own on reads for all
 drop policy if exists blocks_own on blocks;
 create policy blocks_own on blocks for all
   using (blocker_id = auth.uid()) with check (blocker_id = auth.uid());
+
+drop policy if exists push_subs_own on push_subscriptions;
+create policy push_subs_own on push_subscriptions for all
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
 
 drop policy if exists reports_insert on reports;
 create policy reports_insert on reports for insert with check (reporter_id = auth.uid());

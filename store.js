@@ -181,6 +181,30 @@
     async blocked() { return this.db.blocks.map((id) => this.people().find((p) => p.id === id)).filter(Boolean); }
     async totalUnread() { return Object.values(this.db.unread).reduce((a, b) => a + b, 0); }
 
+    // ----- push (demo) -----
+    // No server here, so the demo fires a real local notification instead. It
+    // exercises the permission flow and the notification itself, not delivery.
+    async pushStatus() {
+      if (!("Notification" in window)) return { supported: false };
+      return { supported: true, permission: Notification.permission, subscribed: !!this.db.pushOn };
+    }
+    async enablePush() {
+      if (!("Notification" in window)) throw new Error("This browser doesn't support notifications.");
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") throw new Error("Notifications are blocked. Turn them back on in your browser settings.");
+      this.db.pushOn = true; this.save();
+      return true;
+    }
+    async disablePush() { this.db.pushOn = false; this.save(); }
+    async notify(kind, name) {
+      if (!this.db.pushOn || !("Notification" in window) || Notification.permission !== "granted") return;
+      const title = kind === "match" ? "It's a catch!" : name;
+      const body = kind === "match" ? `You and ${name} hooked each other.` : "sent you a message";
+      const opts = { body, icon: "assets/icon-192.png", tag: "hooky-demo", renotify: true };
+      const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+      if (reg) await reg.showNotification(title, opts); else new Notification(title, opts);
+    }
+
     // ----- private rooms (demo) -----
     async roomsAllowed() { return this.db.premium ? S.roomsAllowed(this.db.tier || "plus") : 0; }
     async browseRooms() {
@@ -336,6 +360,53 @@
     async unblock(userId) { await this.sb.from("blocks").delete().eq("blocker_id", this.uid).eq("blocked_id", userId); }
     async blocked() { const { data } = await this.sb.rpc("my_blocked"); return (data || []).map((r) => this.map(r)); }
     async totalUnread() { const { data } = await this.sb.rpc("total_unread"); return data || 0; }
+
+    // ----- push -----
+    async pushStatus() {
+      if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+        return { supported: false };
+      }
+      const reg = await navigator.serviceWorker.ready.catch(() => null);
+      const sub = reg && await reg.pushManager.getSubscription();
+      return { supported: true, permission: Notification.permission, subscribed: !!sub };
+    }
+    async enablePush() {
+      const cfg = this.cfg;
+      if (!cfg.vapidPublicKey) throw new Error("Push isn't configured for this build.");
+      if (!("Notification" in window) || !("PushManager" in window)) {
+        throw new Error("This browser doesn't support push notifications.");
+      }
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") throw new Error("Notifications are blocked. Turn them back on in your browser settings.");
+
+      const reg = await navigator.serviceWorker.ready;
+      // The VAPID key has to be raw bytes, not the base64url string.
+      const raw = cfg.vapidPublicKey.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = raw + "=".repeat((4 - (raw.length % 4)) % 4);
+      const bin = atob(padded);
+      const key = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) key[i] = bin.charCodeAt(i);
+
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      const j = sub.toJSON();
+      const { error } = await this.sb.from("push_subscriptions").upsert({
+        endpoint: sub.endpoint, user_id: this.uid, p256dh: j.keys.p256dh, auth: j.keys.auth,
+      }, { onConflict: "endpoint" });
+      if (error) throw error;
+      return true;
+    }
+    async disablePush() {
+      const reg = await navigator.serviceWorker.ready.catch(() => null);
+      const sub = reg && await reg.pushManager.getSubscription();
+      if (sub) {
+        await this.sb.from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
+        await sub.unsubscribe();
+      }
+    }
+    // Fire and forget: a failed notification must never break sending a message.
+    async notify(kind, matchId) {
+      try { await this.sb.functions.invoke("push-send", { body: { match_id: matchId, kind } }); } catch {}
+    }
 
     // Photo moderation runs server-side; the profiles trigger blocks the client
     // from writing photo_url, so this is the only way a photo gets published.

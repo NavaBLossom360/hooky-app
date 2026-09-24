@@ -427,7 +427,7 @@
       el.style.transition = "transform .4s ease, opacity .4s"; el.style.transform = `translate(${dir === "like" ? 600 : -600}px, -40px) rotate(${dir === "like" ? 30 : -30}deg)`; el.style.opacity = 0;
       cands.shift();
       setTimeout(async () => { paint(); $(".likes-left").textContent = hooksLeftText(await store.likesRemaining()); }, 250);
-      if (res.matched) celebrate(u, res.matched);
+      if (res.matched) { celebrate(u, res.matched); store.notify("match", store.kind === "local" ? u.name : res.matched.id); }
     }
     $("#nope").onclick = () => { const top = deck.querySelector(".card:last-child"); if (top && queue[0]) fly(top, queue[0], "nope"); };
     $("#like").onclick = () => { const top = deck.querySelector(".card:last-child"); if (top && queue[0]) fly(top, queue[0], "like"); };
@@ -452,8 +452,8 @@
       ${online ? `<button class="btn lime" id="live">📹 Go live now</button><br><br>` : ""}
       <button class="btn primary" id="say">Say hi 👋</button><br><br><button class="btn ghost" id="later">Keep casting</button></div>`;
     $("#app").appendChild(el);
-    $("#later", el).onclick = () => el.remove();
-    $("#say", el).onclick = () => { el.remove(); openChat(match.id); };
+    $("#later", el).onclick = () => { el.remove(); maybeOfferPush(); };
+    $("#say", el).onclick = () => { el.remove(); openChat(match.id); maybeOfferPush(); };
     $("#live", el) && ($("#live", el).onclick = async () => { el.remove(); const m = (await store.matches()).find((x) => x.id === match.id); openChat(match.id); askCallKind(m); });
   }
 
@@ -617,6 +617,7 @@
       const res = await store.send(matchId, t);
       if (res.blocked) return modal(`<h2>Hold up</h2><p>That message looks like it shares ${esc(res.reasons.join(", "))}. ${strict ? "To keep everyone safe, chats in teen groups stay on Hooky." : "Chats stay on Hooky."}</p><p class="muted small">Want to actually talk? If ${esc(u.name)} is online, tap 📹 to go live instead. If someone is pressuring you to leave Hooky or share personal info, that's a red flag. Report them from the ⋯ menu.</p><button class="btn primary" id="ok">Got it</button>`, () => { $("#ok").onclick = closeModal; });
       if (res.warn) toast("Careful sharing " + res.warn.join(", "));
+      store.notify("message", store.kind === "local" ? me.name : matchId);
       $("#txt").value = ""; load();
     };
     load();
@@ -648,6 +649,11 @@
           <a class="setting" href="legal.html" target="_blank" style="text-decoration:none;color:inherit"><span>Terms, privacy &amp; guidelines</span><span class="muted small">›</span></a>
         </div>
         <div class="card-box">
+          <h3>Notifications</h3>
+          <button class="setting" id="pushToggle"><span>New catches and messages</span><span class="muted small" id="pushState">…</span></button>
+          <p class="tiny muted" style="margin:6px 0 0">Notifications say that someone messaged you, never what they said, so nothing shows on a lock screen.</p>
+        </div>
+        <div class="card-box">
           <h3>Account</h3>
           ${store.kind === "local" ? `<button class="setting" id="togglePlus"><span>Demo: toggle Hooky+</span><span class="muted small">${me.premium ? "on" : "off"}</span></button>` : ""}
           <button class="setting" id="signout"><span>Sign out</span><span class="muted small">›</span></button>
@@ -656,6 +662,7 @@
         <p class="tiny muted center">Hooky ${store.kind === "local" ? "demo build" : ""} · Not a dating app · 13+</p>
       </div>`;
     $("#edit").onclick = () => renderSettings();
+    wirePushToggle();
     $("#plus") && ($("#plus").onclick = () => renderPlus());
     $("#togglePlus") && ($("#togglePlus").onclick = async () => { await store.setPremium(!me.premium); renderProfile(); });
     $("#blockedBtn").onclick = () => modal(`<h2>Blocked</h2><div class="list">${blocked.map((p) => `<div class="item">${avatarHtml(p)}<div class="name">${esc(p.name)}</div><button class="btn ghost sm" data-un="${p.id}" style="margin-left:auto">Unblock</button></div>`).join("") || `<p class="muted">Nobody blocked.</p>`}</div>`, (bg) => { bg.onclick = async (e) => { const b = e.target.closest("[data-un]"); if (b) { await store.unblock(b.dataset.un); closeModal(); renderProfile(); } else if (e.target === bg) closeModal(); }; });
@@ -669,6 +676,56 @@
       <button class="btn primary" id="ok">Got it</button>`, () => { $("#ok").onclick = closeModal; });
     $("#signout").onclick = async () => { await store.signOut(); boot(); };
     $("#del").onclick = () => modal(`<h2>Delete account?</h2><p class="muted">This removes your profile, catches, and messages. It can't be undone.</p><button class="btn danger" id="yes">Delete everything</button><br><br><button class="btn ghost" id="no">Cancel</button>`, () => { $("#no").onclick = closeModal; $("#yes").onclick = async () => { await store.deleteAccount(); closeModal(); boot(); }; });
+  }
+
+  // ---------- push notifications ----------
+  async function wirePushToggle() {
+    const btn = $("#pushToggle"), label = $("#pushState");
+    if (!btn) return;
+    const paint = async () => {
+      const st = await store.pushStatus();
+      if (!st.supported) { label.textContent = "not supported here"; btn.disabled = true; return; }
+      if (st.permission === "denied") { label.textContent = "blocked in browser"; return; }
+      label.textContent = st.subscribed ? "on" : "off";
+      btn.dataset.on = st.subscribed ? "1" : "";
+    };
+    btn.onclick = async () => {
+      const on = btn.dataset.on === "1";
+      label.textContent = on ? "turning off…" : "turning on…";
+      try {
+        if (on) await store.disablePush(); else await store.enablePush();
+        toast(on ? "Notifications off" : "Notifications on");
+      } catch (e) { toast(e.message, 3200); }
+      paint();
+    };
+    paint();
+  }
+
+  // Offer once, right after a first catch, when the value is obvious.
+  async function maybeOfferPush() {
+    if (localStorage.getItem("hooky.pushAsked")) return;
+    const st = await store.pushStatus();
+    if (!st.supported || st.permission !== "default") return;
+    localStorage.setItem("hooky.pushAsked", "1");
+    modal(`<h2>Get notified?</h2>
+      <p class="muted small">We'll tell you about new catches and messages. Notifications never include what anyone said.</p>
+      <div class="stack">
+        <button class="btn lime" id="pOn">Turn on notifications</button>
+        <button class="btn ghost" id="pNo">Not now</button>
+      </div>`, () => {
+      $("#pNo").onclick = closeModal;
+      $("#pOn").onclick = async () => {
+        try { await store.enablePush(); toast("Notifications on"); } catch (e) { toast(e.message, 3200); }
+        closeModal();
+      };
+    });
+  }
+
+  // Tapping a notification focuses the app; take the person to their chats.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data && e.data.type === "notification-click" && state.me) showTab("matches");
+    });
   }
 
   // ---------- settings ----------

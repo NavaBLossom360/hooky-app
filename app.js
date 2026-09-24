@@ -162,7 +162,9 @@
     $("#start").onclick = () => { state.step = 0; state.draft = state.me || {}; renderOnboarding(); };
   }
 
-  const STEPS = ["age", "name", "photo", "interests", "verify"];
+  const STEPS = ["age", "gender", "name", "photo", "interests", "verify"];
+  const GENDERS = S.GENDERS;
+  const ALL_GENDERS = GENDERS.map((g) => g.id);
   function renderOnboarding() {
     setTabsVisible(false);
     const step = STEPS[state.step];
@@ -175,6 +177,17 @@
       <p class="muted">This decides who you can see. It can't be changed later, so be honest.</p>
       <div class="field"><label>Birthday</label><input id="bday" class="input" type="date" value="${esc(d.birthdate || "")}" max="${new Date().toISOString().slice(0, 10)}"></div>
       <div id="bracketInfo" class="notice hidden"></div>
+      <div id="err" class="error"></div>`;
+    if (step === "gender") body = `
+      <h1>About you</h1>
+      <p class="muted">Your gender shows on your profile. Who you want to meet stays private.</p>
+      <div class="field"><label>I am</label>
+        <div class="chips" id="gender">${GENDERS.map((g) => `<button class="chip ${d.gender === g.id ? "on" : ""}" data-g="${g.id}">${esc(g.label)}</button>`).join("")}</div>
+      </div>
+      <div class="field" style="margin-top:10px"><label>Show me</label>
+        <div class="chips" id="showMe">${GENDERS.map((g) => `<button class="chip ${(d.showMe || ALL_GENDERS).includes(g.id) ? "on" : ""}" data-s="${g.id}">${esc(g.label)}</button>`).join("")}</div>
+      </div>
+      <p class="tiny muted">Whatever you pick, you only ever see people in your own age group. You can change this later in Settings.</p>
       <div id="err" class="error"></div>`;
     if (step === "name") body = `
       <h1>What should people call you?</h1>
@@ -197,9 +210,9 @@
       <div id="err" class="error"></div>`;
     if (step === "verify") body = `
       <h1>Quick selfie check</h1>
-      <p class="muted">We use a live selfie to make sure you're a real person and estimate your age. It's deleted right after. This keeps adults out of teen spaces.</p>
+      <p class="muted">Look at the camera and hold still for a second. This confirms you're a real person and checks your age against your birthday. The frames are never stored.</p>
       <div class="selfie-box" id="selfie"><span class="muted">Camera preview</span></div>
-      <div class="notice">In this demo build the check is simulated.</div>
+      <div id="checkNote" class="notice">Your face should fill the circle, in decent light.</div>
       <div id="err" class="error"></div>`;
 
     const last = state.step === STEPS.length - 1;
@@ -238,11 +251,26 @@
     if (step === "interests") {
       $("#tags").onclick = (e) => { const b = e.target.closest("[data-t]"); if (!b) return; d.tags = d.tags || []; const t = b.dataset.t; d.tags = d.tags.includes(t) ? d.tags.filter((x) => x !== t) : [...d.tags, t].slice(0, 8); b.classList.toggle("on", d.tags.includes(t)); };
     }
+    if (step === "gender") {
+      $("#gender").onclick = (e) => { const b = e.target.closest("[data-g]"); if (!b) return; d.gender = b.dataset.g; renderOnboarding(); };
+      $("#showMe").onclick = (e) => {
+        const b = e.target.closest("[data-s]"); if (!b) return;
+        const cur = (d.showMe || ALL_GENDERS).slice();
+        const g = b.dataset.s;
+        d.showMe = cur.includes(g) ? cur.filter((x) => x !== g) : cur.concat(g);
+        b.classList.toggle("on", d.showMe.includes(g));
+      };
+    }
     if (step === "verify") {
-      navigator.mediaDevices && navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } }).then((stream) => {
-        const v = document.createElement("video"); v.autoplay = true; v.muted = true; v.playsInline = true; v.srcObject = stream; $("#selfie").replaceChildren(v);
+      state.video = null;
+      navigator.mediaDevices && navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 } } }).then((stream) => {
+        const v = document.createElement("video"); v.autoplay = true; v.muted = true; v.playsInline = true; v.srcObject = stream;
+        $("#selfie").replaceChildren(v);
+        state.video = v;
         state.stopCam = () => stream.getTracks().forEach((t) => t.stop());
-      }).catch(() => { $("#selfie").innerHTML = `<span class="muted small">Camera not available here.<br>Continuing in demo mode.</span>`; });
+      }).catch(() => {
+        $("#selfie").innerHTML = `<span class="muted small">Camera unavailable.<br>Allow camera access to continue.</span>`;
+      });
     }
 
     $("#next").onclick = async () => {
@@ -259,16 +287,50 @@
         if (d.name.length < 2) return (err.textContent = "Add a name.");
         if (/\d{3,}|@|http/i.test(d.name + d.bio)) return (err.textContent = "No numbers, handles, or links in your name or bio.");
       }
+      if (step === "gender") {
+        if (!d.gender) return (err.textContent = "Pick how you describe yourself.");
+        if (!(d.showMe || ALL_GENDERS).length) return (err.textContent = "Pick at least one group to see.");
+        d.showMe = d.showMe || ALL_GENDERS.slice();
+      }
       if (step === "photo" && !d.emoji && !d.photo) d.emoji = "🙂";
       if (step === "interests" && (d.tags || []).length < 3) return (err.textContent = "Pick at least 3.");
       if (step === "verify") {
-        state.stopCam && state.stopCam(); d.verification = "estimated";
-        $("#next").disabled = true; $("#next").textContent = "Checking…"; await new Promise((r) => setTimeout(r, 1200));
-        state.me = await store.saveMe(d);
-        buzz([30, 40, 30]); toast("You're in 🎣"); return showTab("discover");
+        const btn = $("#next");
+        btn.disabled = true; btn.textContent = "Saving…";
+        try {
+          // The profile has to exist before the server can attach a verdict to it.
+          state.me = await store.saveMe(d);
+          btn.textContent = "Checking…";
+          const frames = await captureFrames();
+          state.stopCam && state.stopCam(); state.stopCam = null;
+          await store.submitAgeCheck(frames);
+          state.me = await store.getMe();
+          buzz([30, 40, 30]); toast("You're in 🎣"); return showTab("discover");
+        } catch (e) {
+          btn.disabled = false; btn.textContent = "Try again";
+          err.textContent = e.message || "The age check didn't go through.";
+          return;
+        }
       }
       state.step++; renderOnboarding();
     };
+  }
+
+  // Grabs a few frames a moment apart. Several frames let the server tell a live
+  // person from a single photo held up to the lens.
+  async function captureFrames(count = 3, gapMs = 400) {
+    const v = state.video;
+    if (!v || !v.videoWidth) throw new Error("Allow camera access to finish the check.");
+    const c = document.createElement("canvas");
+    const w = 320; c.width = w; c.height = Math.round((v.videoHeight / v.videoWidth) * w);
+    const ctx = c.getContext("2d");
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      out.push(c.toDataURL("image/jpeg", 0.75));
+      if (i < count - 1) await new Promise((r) => setTimeout(r, gapMs));
+    }
+    return out;
   }
 
   // ---------- tabs ----------
@@ -446,7 +508,7 @@
     const blocked = await store.blocked();
     screen.innerHTML = `<div class="topbar"><h2 style="margin:0">Me</h2><div class="grow"></div>${me.premium ? `<span class="pill plus">PLUS</span>` : ""}</div>
       <div class="pad stack">
-        <div class="row">${avatarHtml(me, "lg")}<div><h2 style="margin:0">${esc(me.name)}, ${me.age}</h2><div class="muted small">📍 ${esc(me.region || "")}</div><div class="row" style="margin-top:6px"><span class="pill">${b.label}</span><span class="pill ${me.verification ? "ok" : "pending"}">${me.verification ? "✓ verified" : "unverified"}</span></div></div></div>
+        <div class="row">${avatarHtml(me, "lg")}<div><h2 style="margin:0">${esc(me.name)}, ${me.age}</h2><div class="muted small">📍 ${esc(me.region || "")}</div><div class="row" style="margin-top:6px"><span class="pill">${b.label}</span><span class="pill ${me.verification ? "ok" : "pending"}">${me.verification ? "✓ age checked" : "not checked"}</span></div></div></div>
         <p class="small">${esc(me.bio || "")}</p>
         <div class="chips">${(me.tags || []).map((t) => `<span class="chip on">${esc(t)}</span>`).join("")}</div>
         <button class="btn ghost" id="edit">Edit profile</button>
@@ -455,6 +517,8 @@
           <h3>Safety</h3>
           <div class="setting"><span>Age group</span><span class="muted small">${b.label} (locked)</span></div>
           <div class="setting"><span>Who can see me</span><span class="muted small">Only my age group</span></div>
+          <div class="setting"><span>I am</span><span class="muted small">${esc((GENDERS.find((g) => g.id === me.gender) || {}).label || "not set")}</span></div>
+          <div class="setting"><span>Show me</span><span class="muted small">${esc((me.showMe || ALL_GENDERS).map((g) => (GENDERS.find((x) => x.id === g) || {}).label).filter(Boolean).join(", ") || "everyone")}</span></div>
           <div class="setting"><span>Live calls</span><span class="muted small">Catches only, both online</span></div>
           <div class="setting"><span>Location shown</span><span class="muted small">Region only</span></div>
           <button class="setting" id="blockedBtn"><span>Blocked people</span><span class="muted small">${blocked.length} ›</span></button>
@@ -470,7 +534,7 @@
         </div>
         <p class="tiny muted center">Hooky ${store.kind === "local" ? "demo build" : ""} · Not a dating app · 13+</p>
       </div>`;
-    $("#edit").onclick = () => { state.draft = Object.assign({}, me); state.step = 1; renderOnboarding(); };
+    $("#edit").onclick = () => renderSettings();
     $("#plus") && ($("#plus").onclick = () => renderPlus());
     $("#togglePlus") && ($("#togglePlus").onclick = async () => { await store.setPremium(!me.premium); renderProfile(); });
     $("#blockedBtn").onclick = () => modal(`<h2>Blocked</h2><div class="list">${blocked.map((p) => `<div class="item">${avatarHtml(p)}<div class="name">${esc(p.name)}</div><button class="btn ghost sm" data-un="${p.id}" style="margin-left:auto">Unblock</button></div>`).join("") || `<p class="muted">Nobody blocked.</p>`}</div>`, (bg) => { bg.onclick = async (e) => { const b = e.target.closest("[data-un]"); if (b) { await store.unblock(b.dataset.un); closeModal(); renderProfile(); } else if (e.target === bg) closeModal(); }; });
@@ -484,6 +548,100 @@
       <button class="btn primary" id="ok">Got it</button>`, () => { $("#ok").onclick = closeModal; });
     $("#signout").onclick = async () => { await store.signOut(); boot(); };
     $("#del").onclick = () => modal(`<h2>Delete account?</h2><p class="muted">This removes your profile, catches, and messages. It can't be undone.</p><button class="btn danger" id="yes">Delete everything</button><br><br><button class="btn ghost" id="no">Cancel</button>`, () => { $("#no").onclick = closeModal; $("#yes").onclick = async () => { await store.deleteAccount(); closeModal(); boot(); }; });
+  }
+
+  // ---------- settings ----------
+  // Everything editable lives here. Birthdate is deliberately absent: it is
+  // write-once, in the client and in the database.
+  async function renderSettings() {
+    const me = state.me = await store.getMe();
+    const d = Object.assign({ showMe: ALL_GENDERS.slice() }, me);
+    setTabsVisible(false);
+
+    function paint() {
+      screen.innerHTML = `<div class="topbar"><button class="iconbtn" id="back">‹</button><h2 style="margin:0">Settings</h2></div>
+        <div class="pad stack">
+          <div class="center">${avatarHtml({ emoji: d.emoji, photo: d.photo, gradient: me.gradient }, "lg")}</div>
+          <div class="chips center" id="emojis" style="justify-content:center">${EMOJIS.map((e) => `<button class="chip ${d.emoji === e && !d.photo ? "on" : ""}" data-e="${e}">${e}</button>`).join("")}</div>
+          <div class="row">
+            <label class="btn ghost sm">📷 Photo<input id="photoIn" type="file" accept="image/*" class="hidden"></label>
+            ${d.photo ? `<button id="rmPhoto" class="btn ghost sm">Remove photo</button>` : ""}
+          </div>
+
+          <div class="card-box stack">
+            <h3>Profile</h3>
+            <div class="field"><label>Name</label><input id="name" class="input" maxlength="20" value="${esc(d.name || "")}"></div>
+            <div class="field"><label>Region</label><input id="region" class="input" maxlength="30" value="${esc(d.region || "")}"></div>
+            <div class="field"><label>Bio</label><textarea id="bio" class="input" maxlength="140">${esc(d.bio || "")}</textarea></div>
+            <div class="field"><label>Interests (pick up to 8)</label>
+              <div class="chips" id="tags">${INTERESTS.map((t) => `<button class="chip ${(d.tags || []).includes(t) ? "on" : ""}" data-t="${t}">${t}</button>`).join("")}</div>
+            </div>
+          </div>
+
+          <div class="card-box stack">
+            <h3>You and who you meet</h3>
+            <div class="field"><label>I am</label>
+              <div class="chips" id="gender">${GENDERS.map((g) => `<button class="chip ${d.gender === g.id ? "on" : ""}" data-g="${g.id}">${esc(g.label)}</button>`).join("")}</div>
+            </div>
+            <div class="field"><label>Show me</label>
+              <div class="chips" id="showMe">${GENDERS.map((g) => `<button class="chip ${(d.showMe || []).includes(g.id) ? "on" : ""}" data-s="${g.id}">${esc(g.label)}</button>`).join("")}</div>
+            </div>
+            <p class="tiny muted">Matching is mutual: you both have to be in each other's "show me" to appear.</p>
+            <div class="setting"><span>Age group</span><span class="muted small">${S.bracketForAge(me.age).label} · locked</span></div>
+            <div class="setting"><span>Birthday</span><span class="muted small">${esc(me.birthdate || "")} · can't change</span></div>
+          </div>
+
+          <div id="err" class="error"></div>
+          <button id="save" class="btn primary">Save changes</button>
+        </div>`;
+
+      $("#back").onclick = () => showTab("profile");
+      $("#emojis").onclick = (e) => { const b = e.target.closest("[data-e]"); if (!b) return; d.emoji = b.dataset.e; delete d.photo; paint(); };
+      $("#rmPhoto") && ($("#rmPhoto").onclick = () => { delete d.photo; paint(); });
+      $("#photoIn").onchange = (e) => {
+        const f = e.target.files[0]; if (!f) return;
+        const img = new Image(); const url = URL.createObjectURL(f);
+        img.onload = () => {
+          const c = document.createElement("canvas"); const s = 512; c.width = c.height = s;
+          const ctx = c.getContext("2d"); const m = Math.min(img.width, img.height);
+          ctx.drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, s, s);
+          d.photo = c.toDataURL("image/jpeg", 0.8); URL.revokeObjectURL(url); paint();
+        };
+        img.src = url;
+      };
+      $("#tags").onclick = (e) => {
+        const b = e.target.closest("[data-t]"); if (!b) return;
+        const t = b.dataset.t; const cur = d.tags || [];
+        d.tags = cur.includes(t) ? cur.filter((x) => x !== t) : cur.concat(t).slice(0, 8);
+        b.classList.toggle("on", d.tags.includes(t));
+      };
+      $("#gender").onclick = (e) => { const b = e.target.closest("[data-g]"); if (!b) return; d.gender = b.dataset.g; paint(); };
+      $("#showMe").onclick = (e) => {
+        const b = e.target.closest("[data-s]"); if (!b) return;
+        const g = b.dataset.s; const cur = d.showMe || [];
+        d.showMe = cur.includes(g) ? cur.filter((x) => x !== g) : cur.concat(g);
+        b.classList.toggle("on", d.showMe.includes(g));
+      };
+
+      $("#save").onclick = async () => {
+        const err = $("#err"); err.textContent = "";
+        d.name = $("#name").value.trim(); d.region = $("#region").value.trim(); d.bio = $("#bio").value.trim();
+        if (d.name.length < 2) return (err.textContent = "Add a name.");
+        if (/\d{3,}|@|http/i.test(d.name + d.bio)) return (err.textContent = "No numbers, handles, or links in your name or bio.");
+        if (!d.gender) return (err.textContent = "Pick how you describe yourself.");
+        if (!(d.showMe || []).length) return (err.textContent = "Pick at least one group to see.");
+        if ((d.tags || []).length < 3) return (err.textContent = "Pick at least 3 interests.");
+        $("#save").disabled = true; $("#save").textContent = "Saving…";
+        try {
+          state.me = await store.saveMe(d);
+          toast("Saved"); showTab("profile");
+        } catch (e2) {
+          $("#save").disabled = false; $("#save").textContent = "Save changes";
+          err.textContent = e2.message || "Couldn't save.";
+        }
+      };
+    }
+    paint();
   }
 
   // ---------- Hooky+ (paid tier) ----------

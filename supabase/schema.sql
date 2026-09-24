@@ -19,6 +19,9 @@ exception when duplicate_object then null; end $$;
 do $$ begin
   create type verification_state as enum ('none', 'pending', 'estimated', 'verified', 'failed');
 exception when duplicate_object then null; end $$;
+do $$ begin
+  create type gender as enum ('woman', 'man', 'nonbinary', 'other');
+exception when duplicate_object then null; end $$;
 
 -- ---------- helpers ----------
 -- STABLE, not IMMUTABLE: the result depends on today's date.
@@ -52,6 +55,15 @@ create table if not exists profiles (
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
+
+-- Added after the first release, so these use ADD COLUMN IF NOT EXISTS to keep
+-- this file safe to re-run against an existing database.
+alter table profiles add column if not exists gender gender;
+alter table profiles add column if not exists show_me gender[] not null default enum_range(null::gender);
+alter table profiles add column if not exists verification_provider text;
+alter table profiles add column if not exists verified_at timestamptz;
+alter table profiles add column if not exists age_estimate_low int;
+alter table profiles add column if not exists age_estimate_high int;
 
 -- Minimum age is enforced in a trigger, because a CHECK constraint may only
 -- call IMMUTABLE functions and age depends on the current date.
@@ -220,26 +232,40 @@ drop policy if exists subs_read on subscriptions;
 create policy subs_read on subscriptions for select using (user_id = auth.uid());
 
 -- ---------- RPCs ----------
--- PLACEHOLDER. Replace before launch with a server-side callback from a real
--- age-estimation vendor. As written, a modified client could call this and mark
--- itself checked, which is exactly what the real vendor flow must prevent.
-create or replace function complete_age_check() returns void
-language sql security definer set search_path = public as $$
-  update profiles set verification = 'estimated'
-  where id = auth.uid() and verification = 'none'
+-- Age verification is deliberately NOT callable by clients. The only writer of
+-- profiles.verification is the `age-check` Edge Function, which runs with the
+-- service role and records which provider made the decision. The old
+-- complete_age_check() let any modified client mark itself checked, so it is
+-- dropped here rather than left in place.
+drop function if exists complete_age_check();
+
+create or replace function my_gender() returns gender
+language sql stable security definer set search_path = public as $$
+  select gender from profiles where id = auth.uid()
 $$;
 
+create or replace function my_show_me() returns gender[]
+language sql stable security definer set search_path = public as $$
+  select coalesce(show_me, enum_range(null::gender)) from profiles where id = auth.uid()
+$$;
+
+-- Visibility is mutual: they must match who I want to see, and I must match who
+-- they want to see. A profile with no gender set yet is shown to nobody, which
+-- keeps half-finished signups out of the deck.
 create or replace function discover_candidates(lim int default 20)
 returns table (id uuid, display_name text, age int, emoji text, region text,
-               bio text, interests text[], photo_url text)
+               bio text, interests text[], photo_url text, gender gender)
 language sql stable security definer set search_path = public as $$
   select p.id, p.display_name, years_old(p.birthdate), p.emoji, p.region,
-         p.bio, p.interests, p.photo_url
+         p.bio, p.interests, p.photo_url, p.gender
   from profiles p
   where p.id <> auth.uid()
     and bracket_for(p.birthdate) = my_bracket()
     and p.banned_at is null
     and p.verification in ('estimated', 'verified')
+    and p.gender is not null
+    and p.gender = any(my_show_me())
+    and my_gender() = any(coalesce(p.show_me, enum_range(null::gender)))
     and not is_blocked_either_way(p.id)
     and not exists (select 1 from swipes s where s.swiper_id = auth.uid() and s.target_id = p.id)
   order by (exists (select 1 from swipes s
@@ -265,6 +291,14 @@ begin
     raise exception 'not in your age group';
   end if;
   if is_blocked_either_way(target) then raise exception 'blocked'; end if;
+  -- Mutual gender preference, re-checked here so a modified client cannot like
+  -- someone the deck would never have shown it.
+  if direction = 'like' and not exists (
+       select 1 from profiles p
+       where p.id = target
+         and p.gender = any(my_show_me())
+         and my_gender() = any(coalesce(p.show_me, enum_range(null::gender)))
+     ) then raise exception 'outside your preferences'; end if;
   if direction = 'like' and likes_remaining() = 0 then raise exception 'daily like limit reached'; end if;
 
   insert into swipes (swiper_id, target_id, dir) values (me, target, direction)
@@ -291,14 +325,16 @@ end $$;
 
 create or replace function who_liked_me()
 returns table (id uuid, display_name text, age int, emoji text, region text,
-               bio text, interests text[], photo_url text)
+               bio text, interests text[], photo_url text, gender gender)
 language sql stable security definer set search_path = public as $$
   select p.id, p.display_name, years_old(p.birthdate), p.emoji, p.region,
-         p.bio, p.interests, p.photo_url
+         p.bio, p.interests, p.photo_url, p.gender
   from swipes s join profiles p on p.id = s.swiper_id
   where s.target_id = auth.uid() and s.dir = 'like'
     and bracket_for(p.birthdate) = my_bracket()
     and p.banned_at is null
+    and p.gender = any(my_show_me())
+    and my_gender() = any(coalesce(p.show_me, enum_range(null::gender)))
     and not is_blocked_either_way(p.id)
     and not exists (select 1 from swipes x where x.swiper_id = auth.uid() and x.target_id = p.id)
 $$;
@@ -403,8 +439,10 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 -- ---------- what still needs a server before launch ----------
--- * complete_age_check() must be replaced by a callback from a real
---   age-estimation vendor. Until then a modified client can self-verify.
+-- * Age verification is written only by the `age-check` Edge Function, which
+--   runs with the service role. Set AGE_PROVIDER to a real vendor before
+--   launch; the built-in 'demo' provider performs no identity check and is
+--   recorded in profiles.verification_provider so you can tell them apart.
 -- * Photo uploads should pass a nudity/CSAM classifier in an edge function
 --   before photo_url is written. Never trust a client-supplied URL.
 -- * premium_until must only be written by a payment webhook using the service

@@ -40,6 +40,10 @@
     "wanna go live for a sec?",
   ];
 
+  // Demo-only gender assignment, kept out of the P() rows to avoid a 9th arg.
+  const DEMO_GENDER = { d1: "woman", d2: "man", d3: "woman", d4: "man", d5: "woman", d6: "man", d7: "woman", d8: "man", d9: "woman", d10: "man", d11: "nonbinary", d12: "man", d13: "woman", d14: "man", d15: "woman", d16: "man" };
+  const ALL_GENDERS = S.GENDERS.map((g) => g.id);
+
   function withBracket(u) {
     const b = S.bracketForAge(u.age);
     return Object.assign({}, u, { bracket: b ? b.id : null, gradient: gradientFor(u.id) });
@@ -68,10 +72,12 @@
       return this.getMe();
     }
     async setPremium(on) { this.db.premium = !!on; this.save(); }
+    // Demo stand-in for the server-side age check.
+    async submitAgeCheck() { this.db.me = Object.assign({}, this.db.me, { verification: "estimated", verificationProvider: "demo" }); this.save(); return { ok: true, verification: "estimated", provider: "demo" }; }
     async signOut() { await this.reset(); }
     async deleteAccount() { await this.reset(); }
 
-    people() { return DEMO.map(withBracket); }
+    people() { return DEMO.map((p) => withBracket(Object.assign({ gender: DEMO_GENDER[p.id] || "other" }, p))); }
     // Presence. In the demo about two thirds of people are online, rotating every 90s.
     onlineIds() { const slot = Math.floor(Date.now() / 90000); return new Set(this.people().filter((p) => hash(p.id + slot) % 3 !== 0).map((p) => p.id)); }
     isOnline(id) { return this.onlineIds().has(id); }
@@ -80,8 +86,9 @@
       const me = await this.getMe();
       if (!me) return [];
       const online = this.onlineIds();
+      const showMe = me.showMe || ALL_GENDERS;
       return this.people()
-        .filter((p) => S.canSee(me.bracket, p.bracket) && !this.db.swipes[p.id] && !this.db.blocks.includes(p.id))
+        .filter((p) => S.canSee(me.bracket, p.bracket) && showMe.includes(p.gender) && !this.db.swipes[p.id] && !this.db.blocks.includes(p.id))
         .map((p) => Object.assign(p, { online: online.has(p.id) }))
         .sort((a, b) => Number(b.online) - Number(a.online));
     }
@@ -118,7 +125,8 @@
     }
     async whoLikedMe() {
       const me = await this.getMe();
-      return this.people().filter((p) => p.likedYou && S.canSee(me.bracket, p.bracket) && !this.db.swipes[p.id] && !this.db.blocks.includes(p.id));
+      const showMe = me.showMe || ALL_GENDERS;
+      return this.people().filter((p) => p.likedYou && S.canSee(me.bracket, p.bracket) && showMe.includes(p.gender) && !this.db.swipes[p.id] && !this.db.blocks.includes(p.id));
     }
     async matches() {
       const online = this.onlineIds();
@@ -220,21 +228,32 @@
       if (!this.uid) return null;
       const { data } = await this.sb.from("profiles").select("*").eq("id", this.uid).maybeSingle();
       if (!data) return null;
-      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, premium: data.premium_until && new Date(data.premium_until) > new Date(), verification: data.verification && data.verification !== "none" ? data.verification : null });
+      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider });
     }
     async saveMe(p) {
       const row = { id: this.uid, display_name: p.name, birthdate: p.birthdate, emoji: p.emoji, region: p.region, bio: p.bio, interests: p.tags, photo_url: p.photo || null };
+      if (p.gender) row.gender = p.gender;
+      if (p.showMe) row.show_me = p.showMe;
       const { error } = await this.sb.from("profiles").upsert(row);
       if (error) throw error;
-      // The server decides verification; the client can only say the check ran.
-      // Replace complete_age_check with a real vendor callback before launch.
-      if (p.verification) await this.sb.rpc("complete_age_check");
       return this.getMe();
+    }
+    // Age verification is decided server-side by the age-check Edge Function.
+    // There is deliberately no client-callable way to set it.
+    async submitAgeCheck(frames) {
+      const { data, error } = await this.sb.functions.invoke("age-check", { body: { frames } });
+      if (error) {
+        let detail = "";
+        try { detail = (await error.context.json()).error || ""; } catch {}
+        throw new Error(detail || error.message);
+      }
+      if (!data.ok) throw new Error(data.reason || "Age check failed");
+      return data;
     }
     async setPremium() { throw new Error("Hooky+ is granted server-side after a store purchase webhook."); }
     async deleteAccount() { const { error } = await this.sb.rpc("delete_my_account"); if (error) throw error; await this.signOut(); }
 
-    map(r) { return withBracket({ id: r.id, name: r.display_name, age: r.age, emoji: r.emoji, region: r.region, bio: r.bio, tags: r.interests || [], photo: r.photo_url, online: this.online.has(r.id) }); }
+    map(r) { return withBracket({ id: r.id, name: r.display_name, age: r.age, emoji: r.emoji, region: r.region, bio: r.bio, tags: r.interests || [], photo: r.photo_url, gender: r.gender, online: this.online.has(r.id) }); }
     async candidates() { const { data, error } = await this.sb.rpc("discover_candidates", { lim: 20 }); if (error) throw error; return data.map((r) => this.map(r)).sort((a, b) => Number(b.online) - Number(a.online)); }
     async likesRemaining() { const { data } = await this.sb.rpc("likes_remaining"); return data === -1 ? Infinity : data; }
     async swipe(id, dir) {

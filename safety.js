@@ -49,6 +49,13 @@
     };
   }
 
+  const GENDERS = [
+    { id: "woman", label: "Woman" },
+    { id: "man", label: "Man" },
+    { id: "nonbinary", label: "Non-binary" },
+    { id: "other", label: "Other" },
+  ];
+
   const REPORT_REASONS = [
     "Pretending to be someone else / wrong age",
     "Inappropriate photos or messages",
@@ -58,5 +65,5 @@
     "I just feel unsafe",
   ];
 
-  window.HookySafety = { BRACKETS, MIN_AGE, ageFromBirthdate, bracketForAge, canSee, checkMessage, REPORT_REASONS };
+  window.HookySafety = { BRACKETS, MIN_AGE, GENDERS, ageFromBirthdate, bracketForAge, canSee, checkMessage, REPORT_REASONS };
 })();

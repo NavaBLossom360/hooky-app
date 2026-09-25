@@ -4,6 +4,8 @@
 (function () {
   const S = window.HookySafety;
   const FREE_DAILY_LIKES = 25;
+  // Used when the TURN function is unreachable or not configured.
+  const FALLBACK_ICE = [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] }];
   const DAY = 86400000;
 
   const GRADIENTS = [
@@ -294,6 +296,7 @@
     subscribeCalls(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
     async answerCall() {}
     callChannel() { return { send() {}, on() {}, close() {} }; }
+    async iceServers() { return FALLBACK_ICE; }
 
     // Live (demo): pairs you with a random demo person in your window after a
     // moment. There is no real video on the other end.
@@ -610,6 +613,20 @@
     }
     subscribeCalls(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
     async answerCall(matchId, toUid, accepted) { await this.sendTo(toUid, { type: accepted ? "accept" : "decline", matchId, from: this.uid }); }
+    // STUN and TURN servers for WebRTC, from the turn-credentials function.
+    // They expire, so they're cached and fetched again well before that.
+    async iceServers() {
+      const now = Date.now();
+      if (this.ice && this.ice.until > now) return this.ice.servers;
+      try {
+        const { data, error } = await this.sb.functions.invoke("turn-credentials", { body: {} });
+        if (error || !data || !Array.isArray(data.iceServers)) throw error || new Error("no ice servers");
+        this.ice = { servers: data.iceServers, until: now + Math.max(60, (data.ttl || 300) - 600) * 1000, relay: !!data.relay };
+      } catch {
+        this.ice = { servers: FALLBACK_ICE, until: now + 60000, relay: false };
+      }
+      return this.ice.servers;
+    }
     callChannel(matchId) { return this.signalChannel("call:" + matchId); }
     // A realtime broadcast channel for WebRTC signalling between two people.
     signalChannel(topic) {

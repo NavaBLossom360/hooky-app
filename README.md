@@ -58,7 +58,7 @@ next login, and stay out of everyone's deck until they pass.
 | `sw.js` | Service worker: offline shell and push notifications |
 | `logo.html`, `qr.html` | Regenerate the icons and the QR test card |
 | `supabase/schema.sql` | Tables, row level security, and the server-side rules |
-| `supabase/functions/` | `age-check`, `photo-check`, `push-send`, `billing-webhook` |
+| `supabase/functions/` | `age-check`, `photo-check`, `push-send`, `billing-webhook`, `turn-credentials` |
 | `vendor/face-api/` | The age check's engine and its three models |
 | `assets/emoji/` | 126 Fluent 3D emoji as 160px WebP, about 600 KB in all |
 

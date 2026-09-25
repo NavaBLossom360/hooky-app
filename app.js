@@ -1232,7 +1232,8 @@
     wireLiveControls();
     setCover("loading");
     try {
-      const [stream, model] = await Promise.all([HookyLive.openMedia(), HookyLive.loadGuard()]);
+      // The relay credentials are fetched now too, so the first pairing is quick.
+      const [stream, model] = await Promise.all([HookyLive.openMedia(), HookyLive.loadGuard(), store.iceServers()]);
       if (!$("#stage")) { stream.getTracks().forEach((t) => t.stop()); return; }
       L.stream = stream; L.model = model;
     } catch (e) {
@@ -1265,14 +1266,16 @@
     L.poll = setTimeout(searchLive, 5000);
   }
 
-  function beginPairing(sid, partner) {
+  async function beginPairing(sid, partner) {
     clearTimeout(L.poll);
     L.sid = sid; L.partner = partner; L.hooked = false;
     $("#lHook") && $("#lHook").classList.remove("on");
     setWho(partner); setCover("connecting", partner);
     const mine = sid;
+    const iceServers = await store.iceServers(); // cached; refreshed before it expires
+    if (L.sid !== mine || !L.active) return;
     L.peer = HookyLive.connect({
-      store, sessionId: sid, me: state.me, partner, stream: L.stream,
+      store, sessionId: sid, me: state.me, partner, stream: L.stream, iceServers,
       onRemote: (ms) => {
         if (L.sid !== mine) return;
         const rv = $("#rv"); if (!rv) return;

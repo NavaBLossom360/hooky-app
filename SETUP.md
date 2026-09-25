@@ -184,13 +184,27 @@ on `roulette_sessions` (they can read only their own rows), with the 5s poll
 as a fallback. Signalling runs on a broadcast channel named after the session
 id, a random UUID only the two participants ever see.
 
-**Needs a TURN server before real use.** Peer-to-peer video only uses free
-STUN servers today, which is enough on most home Wi-Fi but often not on
-cellular or school networks; those pairs time out after 15 seconds and Live
-moves on to someone else. Add a TURN provider (Cloudflare Calls TURN,
-Metered, Twilio) and list it in `config.js` as `iceServers`, which both Live
-and regular calls read. Ideally hand out short-lived TURN credentials from an
-Edge Function rather than putting a long-lived secret in `config.js`.
+### TURN relay (for video on cellular)
+
+Peer-to-peer video gets through most home Wi-Fi with free STUN servers, but
+phones on cellular data often sit behind NATs that need a relay. The
+`turn-credentials` Edge Function (deployed) hands each signed-in person
+short-lived Cloudflare TURN credentials, and both Live and regular calls ask
+it before connecting (cached until shortly before they expire). Until its
+secrets are set it returns free STUN servers only, so nothing breaks.
+
+To switch the relay on:
+
+1. In the Cloudflare dashboard, open **Realtime**, then **TURN Server**, and
+   create a TURN key. Copy its **Turn Token ID** and **API Token**.
+2. In Supabase, **Edge Functions -> Secrets**, add `CF_TURN_KEY_ID` and
+   `CF_TURN_API_TOKEN` with those values.
+
+Cloudflare's first 1,000 GB of relayed traffic each month is free, then
+$0.05 per GB. Only pairs that can't connect directly use the relay. The key
+never leaves the function: the app only ever sees credentials that expire
+after four hours. A `config.js` `iceServers` list, if present, overrides all
+of this.
 
 The pairing rules in `roulette_next()` are applied to the live database but
 have not been exercised there with test accounts yet, so the first real proof

@@ -13,8 +13,9 @@
 // arrives. Only a sustained, unmistakable hit ends the chat. Frames never
 // leave the phone.
 (function () {
-  const ICE = (window.HOOKY_CONFIG && window.HOOKY_CONFIG.iceServers) ||
-    [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+  // ICE servers (STUN, plus TURN when configured) come from store.iceServers(),
+  // which gets short-lived Cloudflare TURN credentials from the
+  // turn-credentials Edge Function. A config.js `iceServers` list overrides it.
   const CONNECT_TIMEOUT_MS = 15000;
 
   // Tuned on webcam-style frames of clothed people. The smaller MobileNetV2
@@ -104,7 +105,7 @@
   // Both sides say hello when their channel is ready and answer the first
   // hello they hear, so neither side's offer is lost to a late subscriber. The
   // person with the smaller user id makes the offer.
-  function connect({ store, sessionId, me, partner, stream, onRemote, onConnected, onChat, onEnd }) {
+  function connect({ store, sessionId, me, partner, stream, iceServers, onRemote, onConnected, onChat, onEnd }) {
     let ended = false, connected = false;
     const finish = (reason) => {
       if (ended) return; ended = true;
@@ -125,7 +126,7 @@
     }
 
     const ch = store.rouletteChannel(sessionId);
-    const pc = new RTCPeerConnection({ iceServers: ICE });
+    const pc = new RTCPeerConnection({ iceServers: (window.HOOKY_CONFIG && window.HOOKY_CONFIG.iceServers) || iceServers });
     const pendingIce = [];
     let offered = false, repliedHello = false;
     const iAmCaller = String(me.id) < String(partner.id);

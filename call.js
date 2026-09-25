@@ -2,7 +2,9 @@
 // Demo mode shows your own camera and a placeholder for the other person.
 // Real mode uses WebRTC with signaling over the store's call channel.
 (function () {
-  const ICE = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+  // STUN and TURN come from store.iceServers() (the turn-credentials function);
+  // a config.js `iceServers` list overrides it.
+  const configIce = () => window.HOOKY_CONFIG && window.HOOKY_CONFIG.iceServers;
   const E = window.HookyEmoji;
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -86,7 +88,9 @@
 
       // Real call: WebRTC over the store's signaling channel.
       ch = store.callChannel(matchId);
-      pc = new RTCPeerConnection(ICE);
+      const iceServers = configIce() || (store.iceServers ? await store.iceServers() : [{ urls: "stun:stun.l.google.com:19302" }]);
+      if (ended) return;
+      pc = new RTCPeerConnection({ iceServers });
       stream && stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       pc.ontrack = (ev) => {
         if (voice) { $("#remoteAudio").srcObject = ev.streams[0]; }

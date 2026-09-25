@@ -590,7 +590,9 @@ begin
   delete from auth.users where id = auth.uid();
 end $$;
 
--- Three open reports auto-hide an account pending human review.
+-- Three open reports auto-hide an account pending human review. Reports filed
+-- automatically by the Live safety check arrive with status 'auto' and wait
+-- for a person instead, so a model mistake alone can never hide someone.
 create or replace function reports_autoban() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
@@ -761,6 +763,129 @@ returns table (id uuid, photos text[])
 language sql stable security definer set search_path = public as $$
   select p.id, p.photos from profiles p
   where p.id = any(ids) and can_view_photos_of(p.id::text)
+$$;
+
+-- ---------- Live (random video chat) ----------
+-- People waiting for a stranger sit in roulette_queue; a pairing becomes a
+-- roulette_sessions row. Pairing follows exactly the rules of the deck: same
+-- age window, mutual gender preference, not blocked either way, and not
+-- someone you were paired with in the last 20 minutes. Only age-checked
+-- profiles with at least one approved photo can go live. Video itself is
+-- peer to peer and never touches the server.
+create table if not exists roulette_queue (
+  user_id uuid primary key references profiles(id) on delete cascade,
+  joined_at timestamptz not null default now()
+);
+create table if not exists roulette_sessions (
+  id uuid primary key default gen_random_uuid(),
+  a uuid not null references profiles(id) on delete cascade, -- was waiting
+  b uuid not null references profiles(id) on delete cascade, -- found them
+  created_at timestamptz not null default now(),
+  ended_at timestamptz,
+  ended_by uuid,
+  end_reason text
+);
+create index if not exists roulette_sessions_a on roulette_sessions(a, created_at);
+create index if not exists roulette_sessions_b on roulette_sessions(b, created_at);
+alter table roulette_queue enable row level security;
+alter table roulette_sessions enable row level security;
+-- No policies on the queue: only the functions below touch it. Participants
+-- can read their own sessions, which is what delivers "you've been matched"
+-- over realtime to the person who was waiting.
+drop policy if exists roulette_sessions_mine on roulette_sessions;
+create policy roulette_sessions_mine on roulette_sessions for select using (a = auth.uid() or b = auth.uid());
+do $$ begin
+  alter publication supabase_realtime add table roulette_sessions;
+exception when duplicate_object then null; end $$;
+
+create or replace function can_go_live() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from profiles p where p.id = auth.uid()
+                 and p.verification in ('estimated', 'verified') and p.banned_at is null
+                 and p.gender is not null and cardinality(p.photos) > 0)
+$$;
+
+-- What a person sees about their stranger: the card basics, nothing more.
+create or replace function roulette_partner(sid uuid)
+returns table (id uuid, display_name text, age int, emoji text, region text,
+               bio text, interests text[], photo_url text, gender gender)
+language sql stable security definer set search_path = public as $$
+  select p.id, p.display_name, years_old(p.birthdate), p.emoji, p.region, p.bio,
+         p.interests, p.photo_url, p.gender
+  from roulette_sessions s
+  join profiles p on p.id = case when s.a = auth.uid() then s.b else s.a end
+  where s.id = sid and (s.a = auth.uid() or s.b = auth.uid())
+$$;
+
+-- Find someone. Returns the new session if a compatible person is waiting,
+-- otherwise joins the queue (or refreshes your place in it) and returns
+-- status 'waiting'. Clients call it again every few seconds while waiting,
+-- which doubles as a heartbeat: queue entries older than 30s are ignored, so
+-- someone who closed the app is never matched.
+drop function if exists roulette_next();
+create or replace function roulette_next()
+returns table (status text, session_id uuid, partner_id uuid)
+language plpgsql security definer set search_path = public as $$
+declare me uuid := auth.uid(); my_a int; partner uuid; sid uuid;
+begin
+  if me is null then raise exception 'not signed in'; end if;
+  if not can_go_live() then raise exception 'finish your profile first'; end if;
+  my_a := my_age();
+
+  -- Someone may have paired with us while we were waiting.
+  select s.id, s.b into sid, partner from roulette_sessions s
+  where s.a = me and s.ended_at is null and s.created_at > now() - interval '20 seconds'
+  order by s.created_at desc limit 1;
+  if sid is not null then
+    delete from roulette_queue where user_id = me;
+    return query select 'matched'::text, sid, partner; return;
+  end if;
+
+  -- Close anything older of ours that is still open.
+  update roulette_sessions set ended_at = now(), ended_by = me, end_reason = 'next'
+  where (a = me or b = me) and ended_at is null;
+
+  select q.user_id into partner
+  from roulette_queue q join profiles p on p.id = q.user_id
+  where q.user_id <> me
+    and q.joined_at > now() - interval '30 seconds'
+    and can_see(my_a, years_old(p.birthdate))
+    and p.banned_at is null
+    and p.verification in ('estimated', 'verified')
+    and p.gender = any(my_show_me())
+    and my_gender() = any(coalesce(p.show_me, enum_range(null::gender)))
+    and not is_blocked_either_way(p.id)
+    and not exists (select 1 from roulette_sessions s
+                    where ((s.a = me and s.b = p.id) or (s.a = p.id and s.b = me))
+                      and s.created_at > now() - interval '20 minutes')
+  order by q.joined_at
+  limit 1
+  for update of q skip locked;
+
+  if partner is null then
+    insert into roulette_queue (user_id) values (me)
+    on conflict (user_id) do update set joined_at = now();
+    return query select 'waiting'::text, null::uuid, null::uuid; return;
+  end if;
+
+  delete from roulette_queue where user_id in (me, partner);
+  insert into roulette_sessions (a, b) values (partner, me) returning id into sid;
+  return query select 'matched'::text, sid, partner;
+end $$;
+
+-- End a session (Next, Stop, a report, or the safety check tripping).
+create or replace function roulette_leave(sid uuid, reason text default 'next') returns void
+language sql security definer set search_path = public as $$
+  update roulette_sessions set ended_at = now(), ended_by = auth.uid(), end_reason = left(reason, 40)
+  where id = sid and (a = auth.uid() or b = auth.uid()) and ended_at is null
+$$;
+
+-- Leave Live entirely.
+create or replace function roulette_stop() returns void
+language sql security definer set search_path = public as $$
+  delete from roulette_queue where user_id = auth.uid();
+  update roulette_sessions set ended_at = now(), ended_by = auth.uid(), end_reason = 'stop'
+  where (a = auth.uid() or b = auth.uid()) and ended_at is null;
 $$;
 
 -- ---------- hardening ----------

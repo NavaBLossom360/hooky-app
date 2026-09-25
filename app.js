@@ -822,7 +822,7 @@
     state.tab = tab; state.chatId = null; setTabsVisible(true);
     tabs.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tab));
     refreshUnread();
-    ({ discover: renderDiscover, matches: renderMatches, rooms: renderRooms, profile: renderProfile })[tab]();
+    ({ discover: renderDiscover, live: renderLive, matches: renderMatches, rooms: renderRooms, profile: renderProfile })[tab]();
   }
   function appbar(inner) { return `<div class="appbar">${inner}</div>`; }
   function plusChip(me) {
@@ -1149,6 +1149,270 @@
       } catch (err) { toast(err.message); }
     };
     load();
+  }
+
+  // =====================================================================
+  // Live: random video chat
+  // =====================================================================
+  // Omegle-style: tap Go live, get paired with a random stranger in your own
+  // age window (with mutual gender preference), talk, tap Next for someone
+  // new. Engine is roulette.js; this is the screen and the flow.
+  const L = { active: false, stream: null, model: null, peer: null, sid: null, partner: null, stopGuard: null, unsubMatch: null, poll: null, hooked: false };
+
+  async function renderLive() {
+    const me = state.me = await store.getMe();
+    const b = S.ageBand(me.age);
+    const ready = !real || (me.verification && (me.photos || []).length);
+    const online = Math.max(1, store.onlineIds().size);
+    const row = (slug, t, s) => `<div class="prow"><div class="ico">${emo(slug, 32)}</div><div><b>${t}</b><span>${s}</span></div></div>`;
+    paint(`${appbar(`<h1 class="display title lime">Live</h1><div class="grow"></div><span class="pill live-pill"><span class="dot on"></span>${online} online</span>`)}
+      <div class="live-hero">
+        <div class="orbit">${["video-camera", "waving-hand", "sparkles", "star-struck", "headphone", "fire"].map((s, i) => `<span style="--i:${i}">${emo(s, 44, "sticker")}</span>`).join("")}<div class="core">${avatarHtml(me, "lg")}</div></div>
+        <h2 class="display">Meet someone new, face to face</h2>
+        <p>Random video chat with people aged ${b.label}. Say hi, or tap <b>Next</b> to meet someone else.</p>
+        ${ready ? `<button class="btn lime" id="goLive">${emo("video-camera", 26)} Go live</button>`
+          : `<button class="btn lime" id="fixLive">${emo("camera-flash", 24)} Add a photo to go live</button>`}
+      </div>
+      <div class="plist" style="margin:14px 16px 24px">
+        ${row("sunglasses", "Face on, clothes on", "Show your face and keep it PG. That's the rule for everyone.")}
+        ${row("shield", "Checked on your phone", "An automatic check watches the other person's video. Anything explicit is blurred, ended and reported.")}
+        ${row("flag", "You're in control", "Skip, report or block anyone in one tap. You never owe anyone an explanation.")}
+        ${row("locked", "Nothing is recorded", "Video goes straight between your phones and is never saved.")}
+      </div>`);
+    $("#goLive") && ($("#goLive").onclick = () => startLive());
+    $("#fixLive") && ($("#fixLive").onclick = () => renderSettings());
+    HookyLive.loadGuard().catch(() => {}); // warm up while they read
+  }
+
+  function liveRules(then) {
+    modal(`${emo("shield", 76, "sheet-sticker sticker")}<h2 class="center">House rules</h2>
+      <div class="stack small">
+        <div class="note">${emo("sunglasses", 24)}<div><b>Face on, clothes on.</b> Keep it PG. Breaking this gets you removed from Hooky.</div></div>
+        <div class="note">${emo("shield", 24)}<div><b>There's an automatic check.</b> It watches the other person's video on your phone. Anything explicit ends the chat and gets them reported.</div></div>
+        <div class="note">${emo("hand-stop", 24)}<div><b>If anything feels off, tap Next or report.</b> Never share where you live, your school or other apps. Nobody can make you.</div></div>
+      </div><br>
+      <button class="btn lime" id="agree">I'm in</button><button class="btn dark" id="nah">Not now</button>`, () => {
+      $("#nah").onclick = closeModal;
+      $("#agree").onclick = () => { try { localStorage.setItem("hooky.liveRules", "1"); } catch {} closeModal(); then(); };
+    });
+  }
+
+  function liveStageHtml() {
+    return `<div class="live-stage" id="stage">
+      <div class="remote" id="remote">
+        <video id="rv" autoplay playsinline></video>
+        <div class="cover" id="cover"></div>
+        <div class="guard-label hidden" id="guardLabel"></div>
+      </div>
+      <video id="lv" class="pip" autoplay muted playsinline></video>
+      <div class="live-top">
+        <button class="lbtn" id="lStop" aria-label="Stop">${ICON.x}</button>
+        <div class="who" id="who"></div>
+        <button class="lbtn" id="lRep" aria-label="Report">${emo("flag", 24)}</button>
+      </div>
+      <div class="live-bottom">
+        <div class="live-chat" id="chatlog"></div>
+        <form class="live-compose" id="lform"><input id="ltxt" placeholder="Say hi…" autocomplete="off" maxlength="300"><button type="submit" aria-label="Send">${ICON.send}</button></form>
+        <div class="live-controls">
+          <button class="lbtn" id="lMic" aria-label="Mute">${emo("mic", 26)}</button>
+          <button class="lbtn" id="lCam" aria-label="Camera">${emo("camera", 26)}</button>
+          <button class="lbtn hook" id="lHook" aria-label="Hook">${emo("fishing-pole", 30)}</button>
+          <button class="btn lime next-btn" id="lNext">Next ${ICON.arrow}</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  async function startLive() {
+    try { if (!localStorage.getItem("hooky.liveRules")) return liveRules(startLive); } catch {}
+    setTabsVisible(false);
+    state.inCall = true; // no incoming ring interrupts a Live chat
+    paint(liveStageHtml());
+    state.leave = () => stopLive(true);
+    wireLiveControls();
+    setCover("loading");
+    try {
+      const [stream, model] = await Promise.all([HookyLive.openMedia(), HookyLive.loadGuard()]);
+      if (!$("#stage")) { stream.getTracks().forEach((t) => t.stop()); return; }
+      L.stream = stream; L.model = model;
+    } catch (e) {
+      stopLive(true); state.inCall = false;
+      showTab("live");
+      return modal(`${emo(e.code === "camera-denied" ? "camera" : "crying", 70, "sheet-sticker sticker")}<h2 class="center">Can't go live yet</h2><p class="muted center">${esc(e.message)}</p><button class="btn lime" id="ok">OK</button>`, () => { $("#ok").onclick = closeModal; });
+    }
+    $("#lv").srcObject = L.stream;
+    L.active = true;
+    L.unsubMatch = store.onRouletteMatch(async (sid) => {
+      if (!L.active || L.sid) return;
+      const partner = await store.roulettePartner(sid);
+      if (partner && L.active && !L.sid) beginPairing(sid, partner);
+    });
+    searchLive();
+  }
+
+  async function searchLive() {
+    if (!L.active || L.sid) return;
+    clearTimeout(L.poll);
+    L.partner = null; L.hooked = false;
+    setWho(null); resetLiveChat(); setCover("searching");
+    let r;
+    try { r = await store.rouletteNext(); }
+    catch (e) { toast(e.message, 3600); return stopLive(); }
+    if (!L.active || L.sid) return;
+    if (r.status === "matched") return beginPairing(r.sessionId, r.partner);
+    // Nobody yet. Asking again keeps our place in the queue fresh and looks
+    // for anyone who joined since.
+    L.poll = setTimeout(searchLive, 5000);
+  }
+
+  function beginPairing(sid, partner) {
+    clearTimeout(L.poll);
+    L.sid = sid; L.partner = partner; L.hooked = false;
+    $("#lHook") && $("#lHook").classList.remove("on");
+    setWho(partner); setCover("connecting", partner);
+    const mine = sid;
+    L.peer = HookyLive.connect({
+      store, sessionId: sid, me: state.me, partner, stream: L.stream,
+      onRemote: (ms) => {
+        if (L.sid !== mine) return;
+        const rv = $("#rv"); if (!rv) return;
+        if (ms) { rv.srcObject = ms; setCover(null); startLiveGuard(mine); }
+        else setCover("demo", partner); // demo mode: no real video on the other end
+      },
+      onConnected: () => { if (L.sid === mine) buzz([20, 30, 20]); },
+      onChat: (t) => { if (L.sid === mine && t) addLiveChat("them", t); },
+      onEnd: (reason, local) => {
+        if (L.sid !== mine || local) return;
+        const ended = L.sid; endLivePairing();
+        store.rouletteLeave(ended, reason);
+        if (!L.active) return;
+        toast(reason === "left" ? "They tapped Next. Finding someone new…" : reason === "no-connect" ? "Couldn't connect. Trying someone else…" : "Connection dropped. Finding someone new…", 2200);
+        setTimeout(searchLive, 900);
+      },
+    });
+  }
+
+  function startLiveGuard(mine) {
+    if (L.stopGuard) L.stopGuard();
+    const rv = $("#rv"); if (!rv || !L.model) return;
+    L.stopGuard = HookyLive.watch(rv, L.model, {
+      onState: (s) => setGuard(s),
+      onTrip: () => tripLive(mine),
+    });
+  }
+
+  function endLivePairing() {
+    if (L.stopGuard) { L.stopGuard(); L.stopGuard = null; }
+    const rv = $("#rv"); if (rv) rv.srcObject = null;
+    setGuard("off");
+    L.peer = null; L.sid = null;
+  }
+
+  function nextLive(reason = "next") {
+    const sid = L.sid, peer = L.peer;
+    endLivePairing(); // clears L.sid first, so the closing peer's onEnd is ignored
+    if (peer) peer.close(reason);
+    if (sid) store.rouletteLeave(sid, reason);
+    searchLive();
+  }
+
+  // The guard saw something explicit twice in a row.
+  async function tripLive(mine) {
+    if (L.sid !== mine) return;
+    const partner = L.partner, sid = L.sid, peer = L.peer;
+    endLivePairing(); if (peer) peer.close("nsfw"); store.rouletteLeave(sid, "nsfw");
+    setCover("paused");
+    try { await store.report(partner.id, "Explicit video, caught automatically in Live", "", { auto: true }); await store.block(partner.id); } catch {}
+    buzz([60, 40, 60]);
+    modal(`${emo("shield", 76, "sheet-sticker sticker")}<h2 class="center">We ended that chat</h2>
+      <p class="muted center">Something explicit showed up, so we hid it, ended the chat and reported them. You won't be paired with them again.</p>
+      <p class="tiny muted center">If someone showed you something like that, it's not your fault. You can talk to an adult you trust, or text 988.</p>
+      <button class="btn lime" id="goOn">Keep going</button><button class="btn dark" id="leave">Leave Live</button>`, { sticky: true, onMount: () => {
+      $("#goOn").onclick = () => { closeModal(); searchLive(); };
+      $("#leave").onclick = () => { closeModal(); stopLive(); };
+    } });
+  }
+
+  function stopLive(fromLeave) {
+    if (!L.active && !L.stream) { state.inCall = false; return; }
+    L.active = false;
+    clearTimeout(L.poll);
+    const peer = L.peer;
+    endLivePairing();
+    if (peer) peer.close("stop");
+    store.rouletteStop();
+    if (L.unsubMatch) { L.unsubMatch(); L.unsubMatch = null; }
+    if (L.stream) { L.stream.getTracks().forEach((t) => t.stop()); L.stream = null; }
+    L.partner = null;
+    state.inCall = false;
+    if (!fromLeave) { state.leave = null; showTab("live"); }
+  }
+
+  function wireLiveControls() {
+    $("#lStop").onclick = () => stopLive();
+    $("#lNext").onclick = () => { if (!L.active) return; buzz(8); nextLive("next"); };
+    $("#lRep").onclick = () => {
+      if (!L.partner) return;
+      $("#remote").classList.add("blur"); // stop showing them while you report
+      openReport(L.partner, () => nextLive("report"));
+      const bg = $(".modal-bg", modalRoot);
+      bg && bg.addEventListener("click", (e) => { if (e.target === bg && $("#remote")) $("#remote").classList.remove("blur"); });
+    };
+    $("#lMic").onclick = (e) => { const t = L.stream && L.stream.getAudioTracks()[0]; if (!t) return; t.enabled = !t.enabled; e.currentTarget.classList.toggle("off", !t.enabled); };
+    $("#lCam").onclick = (e) => { const t = L.stream && L.stream.getVideoTracks()[0]; if (!t) return; t.enabled = !t.enabled; e.currentTarget.classList.toggle("off", !t.enabled); $("#lv").classList.toggle("hidden", !t.enabled); };
+    $("#lHook").onclick = async (e) => {
+      const btn = e.currentTarget, p = L.partner; if (!p || L.hooked) return;
+      L.hooked = true; btn.classList.add("on"); buzz([10, 30, 10]);
+      try {
+        const res = await store.swipe(p.id, "like");
+        if (res.limited) { L.hooked = false; btn.classList.remove("on"); return toast("You're out of hooks for today"); }
+        if (res.matched) { emojiRain(); toast(`It's a catch! You and ${p.name} are in each other's chats`, 3200); store.notify("match", store.kind === "local" ? p.name : res.matched.id); }
+        else toast(`Hooked! If ${p.name} hooks you back, it's a catch.`, 2600);
+      } catch (err) { toast(err.message); }
+    };
+    $("#lform").onsubmit = (e) => {
+      e.preventDefault();
+      const i = $("#ltxt"); const t = i.value.trim();
+      if (!t || !L.peer || !L.partner) return;
+      // Same filter as every other chat: strict whenever a minor is in it.
+      const check = S.checkMessage(t, S.isMinor(state.me.age), S.isMinor(L.partner.age));
+      if (check.blocked) return toast(`That looks like it shares ${check.reasons.join(", ")}. Keep it on Hooky.`, 3200);
+      L.peer.sendChat(t); addLiveChat("me", t); i.value = "";
+    };
+  }
+
+  function setWho(p) {
+    const el = $("#who"); if (!el) return;
+    el.innerHTML = p ? `${avatarHtml(p, "sm")}<div><b>${esc(p.name)}, ${p.age}</b><div class="tags mini">${(p.tags || []).slice(0, 2).map((t) => E.tag(t)).join("")}</div></div>` : "";
+  }
+  function setCover(kind, p) {
+    const c = $("#cover"), remote = $("#remote"); if (!c) return;
+    c.style.background = "";
+    if (!kind) { c.className = "cover hidden"; c.innerHTML = ""; return; }
+    c.className = "cover " + kind;
+    const b = S.ageBand(state.me.age);
+    if (kind === "loading") c.innerHTML = `<div>${emo("hourglass", 64, "bob")}<b>Getting ready…</b><span>Starting your camera and the safety check</span></div>`;
+    if (kind === "searching") c.innerHTML = `<div><div class="orbit small">${["waving-hand", "sparkles", "star-struck", "fire", "headphone", "video-game"].map((s, i) => `<span style="--i:${i}">${emo(s, 34)}</span>`).join("")}<div class="core">${emo("magnifier", 50)}</div></div><b>Finding someone…</b><span>People aged ${b.label}</span></div>`;
+    if (kind === "connecting") c.innerHTML = `<div>${avatarHtml(p, "lg")}<b>Connecting to ${esc(p.name)}…</b><span>Say hi when you see them</span></div>`;
+    if (kind === "paused") c.innerHTML = `<div>${emo("shield", 64)}<b>Chat ended</b></div>`;
+    if (kind === "demo") {
+      c.style.background = p.gradient;
+      c.innerHTML = `<div class="demo-remote">${p.photo ? `<img src="${esc(p.photo)}" alt="">` : E.char(p.emoji || "😎", 150, "bob")}<span>Demo mode: nobody's really on camera</span></div>`;
+    }
+    if (remote) remote.classList.remove("blur");
+  }
+  function setGuard(s) {
+    const remote = $("#remote"), label = $("#guardLabel"); if (!remote || !label) return;
+    remote.classList.toggle("blur", s === "checking" || s === "hidden");
+    label.classList.toggle("hidden", s !== "checking" && s !== "hidden");
+    label.innerHTML = s === "hidden" ? `${emo("shield", 20)} Hidden: this looked inappropriate` : `${emo("shield", 20)} Safety check…`;
+  }
+  function resetLiveChat() { const c = $("#chatlog"); if (c) c.innerHTML = ""; }
+  function addLiveChat(who, text) {
+    const c = $("#chatlog"); if (!c) return;
+    const el = document.createElement("div"); el.className = "lmsg " + who; el.textContent = text;
+    c.appendChild(el);
+    while (c.children.length > 6) c.firstChild.remove();
   }
 
   // ---------- Me ----------

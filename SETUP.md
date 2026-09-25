@@ -165,6 +165,37 @@ Calls can be voice or video, chosen when you ring someone. A voice call never
 requests the camera. Both run peer to peer over WebRTC with signalling on a
 per-match realtime channel, and neither is recorded.
 
+### Live (random video chat)
+
+Tables `roulette_queue` (who is waiting) and `roulette_sessions` (who was
+paired), both with row level security. The queue has no policies at all:
+only these functions touch it.
+
+| Function | Does |
+| --- | --- |
+| `roulette_next()` | Pairs you with a compatible waiting person, or queues you. Clients call it every 5s while waiting, which doubles as a heartbeat: queue entries older than 30s are ignored |
+| `roulette_partner(sid)` | The stranger's card basics, for the two people in that session only |
+| `roulette_leave(sid, reason)` | Ends a pairing (Next, report, the safety check) |
+| `roulette_stop()` | Leaves Live |
+| `can_go_live()` | Age-checked, not banned, gender set, at least one photo |
+
+The person who was waiting learns about a pairing through a realtime insert
+on `roulette_sessions` (they can read only their own rows), with the 5s poll
+as a fallback. Signalling runs on a broadcast channel named after the session
+id, a random UUID only the two participants ever see.
+
+**Needs a TURN server before real use.** Peer-to-peer video only uses free
+STUN servers today, which is enough on most home Wi-Fi but often not on
+cellular or school networks; those pairs time out after 15 seconds and Live
+moves on to someone else. Add a TURN provider (Cloudflare Calls TURN,
+Metered, Twilio) and list it in `config.js` as `iceServers`, which both Live
+and regular calls read. Ideally hand out short-lived TURN credentials from an
+Edge Function rather than putting a long-lived secret in `config.js`.
+
+The pairing rules in `roulette_next()` are applied to the live database but
+have not been exercised there with test accounts yet, so the first real proof
+is two phones going live at the same time.
+
 ## Subscriptions
 
 Two tiers and three billing periods, with under-18 pricing on all six.

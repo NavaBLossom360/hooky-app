@@ -1,11 +1,12 @@
 // Hooky service worker: makes the app installable, lets the shell load offline,
 // and receives push notifications for new catches and messages.
 // Network first, cache fallback, so updates show up right away when online.
-const CACHE = "hooky-v7";
-// The age check's library and models (vendor/face-api, about 2 MB) are not
-// precached; they're cached the first time someone runs the check.
-const SHELL = ["./", "index.html", "config.js", "styles.css", "safety.js", "emoji.js", "store.js", "agecheck.js", "call.js", "app.js", "icon.svg", "manifest.json", "legal.html", "assets/wordmark.png", "assets/icon-192.png",
-  ...["fishing-pole", "speech", "couch", "sunglasses", "shield", "phone", "prohibited", "locked", "wastebasket", "camera", "key", "mailbox", "waving-hand", "cake", "sparkles", "heart-hands", "camera-flash", "video-game", "globe", "megaphone", "crown", "eyes", "flag", "pin", "woman", "man", "person", "people-hugging"].map((s) => `assets/emoji/${s}.webp`)];
+const CACHE = "hooky-v8";
+// The age check (vendor/face-api, about 2 MB) and the Live safety check
+// (vendor/nsfwjs, about 6 MB) are not precached; they are cached the first
+// time someone uses them.
+const SHELL = ["./", "index.html", "config.js", "styles.css", "safety.js", "emoji.js", "store.js", "agecheck.js", "call.js", "roulette.js", "app.js", "icon.svg", "manifest.json", "legal.html", "assets/wordmark.png", "assets/icon-192.png",
+  ...["fishing-pole", "speech", "couch", "sunglasses", "shield", "phone", "prohibited", "locked", "wastebasket", "camera", "key", "mailbox", "waving-hand", "cake", "sparkles", "heart-hands", "camera-flash", "video-game", "globe", "megaphone", "crown", "eyes", "flag", "pin", "woman", "man", "person", "people-hugging", "video-camera"].map((s) => `assets/emoji/${s}.webp`)];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

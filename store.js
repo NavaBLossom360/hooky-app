@@ -83,7 +83,8 @@
     async getMe() {
       if (!this.db.me) return null;
       const photos = this.photoRefs();
-      return withBracket(Object.assign({ premium: this.db.premium, tier: this.db.tier }, this.db.me, { photos, photo: photos.length ? photos[0].url : null }));
+      // Age comes from the birthday every time, so it moves on after a birthday.
+      return withBracket(Object.assign({ premium: this.db.premium, tier: this.db.tier }, this.db.me, { age: S.ageFromBirthdate(this.db.me.birthdate), photos, photo: photos.length ? photos[0].url : null }));
     }
     // Mirrors the server: a profile can only be created after the age check,
     // with a birthday that fits what the camera saw. Photos are never saved
@@ -293,6 +294,26 @@
     subscribeCalls(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
     async answerCall() {}
     callChannel() { return { send() {}, on() {}, close() {} }; }
+
+    // Live (demo): pairs you with a random demo person in your window after a
+    // moment. There is no real video on the other end.
+    async rouletteNext() {
+      await new Promise((r) => setTimeout(r, 1200 + Math.random() * 1600));
+      const me = await this.getMe(); const showMe = me.showMe || ALL_GENDERS;
+      const pool = this.people().filter((p) => S.canSee(me.age, p.age) && showMe.includes(p.gender) && !this.db.blocks.includes(p.id));
+      this.liveSeen = this.liveSeen || [];
+      let fresh = pool.filter((p) => !this.liveSeen.includes(p.id));
+      if (!fresh.length) { this.liveSeen = []; fresh = pool; }
+      const pick = fresh[Math.floor(Math.random() * fresh.length)];
+      if (!pick) return { status: "waiting" };
+      this.liveSeen.push(pick.id);
+      return { status: "matched", sessionId: "demo-" + Date.now(), partner: Object.assign(pick, { online: true }) };
+    }
+    async rouletteLeave() {}
+    async rouletteStop() {}
+    onRouletteMatch() { return () => {}; }
+    rouletteChannel() { return { ready: Promise.resolve(), send() {}, on() {}, close() {} }; }
+    demoReply() { return REPLIES[Math.floor(Math.random() * REPLIES.length)]; }
   }
 
   // ---------------- Supabase store ----------------
@@ -474,7 +495,15 @@
       const ch = this.sb.channel("m:" + matchId).on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: "match_id=eq." + matchId }, fn).subscribe();
       return () => this.sb.removeChannel(ch);
     }
-    async report(userId, reason, details) { await this.sb.from("reports").insert({ reported_id: userId, reason, details }); await this.sb.rpc("swipe", { target: userId, direction: "nope" }); }
+    // opts.auto marks a report filed by the Live safety check rather than a
+    // person. Those wait for a human (status 'auto') instead of counting toward
+    // the three-report auto-hide, so a model mistake can't hide someone.
+    async report(userId, reason, details, opts = {}) {
+      const row = { reported_id: userId, reason, details };
+      if (opts.auto) row.status = "auto";
+      await this.sb.from("reports").insert(row);
+      await this.sb.rpc("swipe", { target: userId, direction: "nope" });
+    }
     async block(userId) { await this.sb.from("blocks").insert({ blocked_id: userId }); }
     async unblock(userId) { await this.sb.from("blocks").delete().eq("blocker_id", this.uid).eq("blocked_id", userId); }
     async blocked() { const { data } = await this.sb.rpc("my_blocked"); return (await this.signRows(data)).map((r) => this.map(r)); }
@@ -581,16 +610,46 @@
     }
     subscribeCalls(fn) { this.callListeners.add(fn); return () => this.callListeners.delete(fn); }
     async answerCall(matchId, toUid, accepted) { await this.sendTo(toUid, { type: accepted ? "accept" : "decline", matchId, from: this.uid }); }
-    callChannel(matchId) {
-      const ch = this.sb.channel("call:" + matchId); const handlers = [];
+    callChannel(matchId) { return this.signalChannel("call:" + matchId); }
+    // A realtime broadcast channel for WebRTC signalling between two people.
+    signalChannel(topic) {
+      const ch = this.sb.channel(topic); const handlers = [];
       ch.on("broadcast", { event: "sig" }, ({ payload }) => { if (payload.from !== this.uid) handlers.forEach((fn) => fn(payload)); });
       const ready = new Promise((r) => ch.subscribe((s) => s === "SUBSCRIBED" && r()));
       return {
+        ready,
         on: (fn) => handlers.push(fn),
         send: async (type, data) => { await ready; ch.send({ type: "broadcast", event: "sig", payload: { type, data, from: this.uid } }); },
         close: () => this.sb.removeChannel(ch),
       };
     }
+
+    // ----- Live (random video chat) -----
+    // Pairing happens in the database (roulette_next), with the same rules as
+    // the deck. Video is peer to peer; the session id is the signalling topic.
+    async rouletteNext() {
+      const { data, error } = await this.sb.rpc("roulette_next");
+      if (error) throw new Error(/finish your profile/i.test(error.message) ? "Add a photo and finish your profile to go live." : error.message);
+      const r = (data || [])[0];
+      if (!r || r.status !== "matched") return { status: "waiting" };
+      const partner = await this.roulettePartner(r.session_id);
+      return partner ? { status: "matched", sessionId: r.session_id, partner } : { status: "waiting" };
+    }
+    async roulettePartner(sid) {
+      const { data } = await this.sb.rpc("roulette_partner", { sid });
+      const rows = await this.signRows(data);
+      return rows[0] ? this.map(rows[0]) : null;
+    }
+    async rouletteLeave(sid, reason) { try { await this.sb.rpc("roulette_leave", { sid, reason }); } catch {} }
+    async rouletteStop() { try { await this.sb.rpc("roulette_stop"); } catch {} }
+    // Tells the person who was waiting that someone just paired with them.
+    onRouletteMatch(fn) {
+      const ch = this.sb.channel("rq:" + this.uid)
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "roulette_sessions", filter: "a=eq." + this.uid }, (p) => p.new && fn(p.new.id))
+        .subscribe();
+      return () => this.sb.removeChannel(ch);
+    }
+    rouletteChannel(sid) { return this.signalChannel("rr:" + sid); }
   }
 
   window.HookyStore = { LocalStore, SupabaseStore, FREE_DAILY_LIKES, gradientFor };

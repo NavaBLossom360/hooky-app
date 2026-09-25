@@ -155,6 +155,32 @@ peer to peer over WebRTC with signalling on a per-match realtime channel, nothin
 is recorded, and either side can end or report from the call screen. In demo mode
 the call shows your own camera with a placeholder for the other person.
 
+## Live: random video chat
+
+The **Live** tab is Omegle-style: tap Go live, get paired with a random
+stranger, talk, tap **Next** for someone new. There's a small text chat
+alongside, and a hook button: if you hook each other, it's a catch and you
+land in each other's Chats.
+
+What keeps it from being Omegle:
+
+- **Pairing follows the deck's rules**, in the database (`roulette_next()`):
+  same age window (so 17 and 18 is the only minor/adult pair), mutual gender
+  preference, never someone blocked either way, no instant re-pairing with
+  the same person, and only age-checked profiles with a real photo.
+- **An automatic check on your phone watches the other person's video**
+  (nsfwjs MobileNetV2Mid, in `roulette.js`). Their video starts blurred and
+  shows once a frame is checked, which usually takes under a second.
+  Borderline frames blur it again. About three seconds of near-certain
+  explicit video ends the chat, blocks them and files a report, which waits
+  for a human rather than counting toward the auto-hide.
+- House rules on first use, and Next, Report and Block always one tap away.
+  The chat text goes through the same filter as every other chat.
+- Nothing is recorded; video goes straight between the two phones.
+
+The engine is `roulette.js`; the screens are in `app.js`. In demo mode Live
+pairs you with the fake demo people, with no real video on their side.
+
 ## Private rooms
 
 Paid accounts can open group rooms on a topic they type. A room is pinned to its

@@ -35,8 +35,8 @@ with the email confirmed before the first login.
    age, rides along in the new account's metadata.
 4. **Confirm the email** from the link Supabase sends.
 5. **Log in.**
-6. **Set up the profile**: nickname, birthday, gender, who to meet, photo or
-   emoji, interests, region and bio, notifications. The birthday has to fit the
+6. **Set up the profile**: nickname, birthday, gender, who to meet, 1 to 4
+   photos, interests, region and bio, notifications. The birthday has to fit the
    face estimate, and the database checks that again when the profile is made.
 7. **Browse.**
 
@@ -68,9 +68,11 @@ A dark stage filled with colored 3D emoji. Headlines are huge condensed
 Bricolage Grotesque, onboarding asks one question per screen with a sticker
 pinned to the headline and a round lime arrow to continue, interests are
 chunky colored sticker tags, and cards are full-bleed with the name up top.
-Lime means "go"; the pink to orange gradient means "hook". People who use an
-emoji instead of a photo get a card built from their own interests: their
-emoji large in the middle, their interest stickers floating behind it.
+Lime means "go"; the pink to orange gradient means "hook". Cards show up to
+four photos: tap the right or left half to flip, and the bars along the top
+show which one is up, Yubo-style. The rare profile with no photo (older
+accounts, and the demo's fake people) gets a card built from its interests:
+an emoji large in the middle with interest stickers floating behind it.
 
 The emoji are Microsoft's Fluent Emoji (MIT), bundled so they look identical
 on every phone and never load from a third party.
@@ -128,9 +130,11 @@ to go through app store billing. Safety features and calls are never paywalled.
   Those profiles are marked `verification_provider = 'on-device'`, and the
   server-side `age-check` function can still overwrite them with a stronger
   verdict.
-- **Photo moderation** is written only by the `photo-check` Edge Function: a
-  nudity classifier plus a face check. Clients cannot write `photo_url` at all,
-  so moderation cannot be skipped. It is not CSAM detection.
+- **Real photos, 1 to 4 each.** Setup needs at least one. Every photo passes
+  the `photo-check` Edge Function (a nudity classifier plus a face check)
+  before it is stored, and clients cannot upload or write photos any other
+  way. Files sit in a private bucket, and signed links are only issued to
+  people who could see that profile anyway. It is not CSAM detection.
 - Chats involving anyone under 18 block phone numbers, social handles, other app
   names, links, and meet-up or photo requests. Adults get a warning instead.
 - Private rooms are pinned to their creator's age window, and room topics pass

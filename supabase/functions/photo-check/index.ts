@@ -1,8 +1,16 @@
 // Hooky photo moderation. This is the ONLY code permitted to write
-// profiles.photo_url, which is why it runs with the service role and why the
-// profiles trigger blocks clients from setting that column themselves.
-// Without that, a modified client could simply write a photo URL and skip
+// profiles.photos / profiles.photo_url or to put files in the private
+// `photos` storage bucket, which is why it runs with the service role and why
+// the profiles trigger blocks clients from setting those columns themselves.
+// Without that, a modified client could simply write a photo and skip
 // moderation entirely.
+//
+// Requests (JSON, from a signed-in user):
+//   { image: "data:image/jpeg;base64,..." }   add a photo (max four)
+//   { remove: "<path>" }                        delete one photo
+//   { remove: true }                            delete all (account deletion)
+//   { main: "<path>" }                          make that photo the main one
+// Every response carries the updated list: { ok, photos: [paths] }.
 //
 // A photo is accepted only if BOTH hold:
 //   1. A nudity classifier (ViT, quantized, ~83MB) scores it below the
@@ -30,10 +38,15 @@ const FACE_MODEL_URL = Deno.env.get("FACE_MODEL_URL") ??
 // Deliberately below 0.5. This is a teen app, so an over-eager reject costs a
 // retry while a miss costs a lot more.
 const NSFW_LIMIT = Number(Deno.env.get("NSFW_LIMIT") ?? "0.35");
+const MAX_PHOTOS = 4;
+const BUCKET = "photos";
 
+// supabase-js sends apikey and x-client-info as well as authorization. If the
+// preflight doesn't allow all of them the browser silently drops the real
+// request, which is exactly how photo uploads failed before this list grew.
 const CORS = {
   "Access-Control-Allow-Origin": Deno.env.get("ALLOWED_ORIGIN") ?? "*",
-  "Access-Control-Allow-Headers": "authorization, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 const json = (b: unknown, s = 200) =>
@@ -118,14 +131,22 @@ async function nsfwScore(img: Rgba): Promise<number> {
   return exp[1] / sum;
 }
 
+// UltraFace wants 320x240. Portrait photos are letterboxed into it rather
+// than squashed, because a squashed face often stops looking like a face.
 async function hasFace(img: Rgba): Promise<boolean> {
   const W = 320, H = 240;
-  const rgb = sample(img, 0, 0, img.width, img.height, W, H);
-  const input = new Float32Array(3 * W * H);
-  for (let i = 0; i < W * H; i++) {
-    input[i] = (rgb[i * 3] - 127) / 128;
-    input[W * H + i] = (rgb[i * 3 + 1] - 127) / 128;
-    input[2 * W * H + i] = (rgb[i * 3 + 2] - 127) / 128;
+  const scale = Math.min(W / img.width, H / img.height);
+  const dw = Math.max(1, Math.round(img.width * scale)), dh = Math.max(1, Math.round(img.height * scale));
+  const ox = Math.floor((W - dw) / 2), oy = Math.floor((H - dh) / 2);
+  const rgb = sample(img, 0, 0, img.width, img.height, dw, dh);
+  const input = new Float32Array(3 * W * H); // zeros are mid-grey padding
+  for (let y = 0; y < dh; y++) {
+    for (let x = 0; x < dw; x++) {
+      const s = (y * dw + x) * 3, d = (y + oy) * W + (x + ox);
+      input[d] = (rgb[s] - 127) / 128;
+      input[W * H + d] = (rgb[s + 1] - 127) / 128;
+      input[2 * W * H + d] = (rgb[s + 2] - 127) / 128;
+    }
   }
   const session = await getFace();
   const out = await session.run({ input: new ort.Tensor("float32", input, [1, 3, H, W]) });
@@ -155,11 +176,37 @@ Deno.serve(async (req) => {
   let body: any;
   try { body = await req.json(); } catch { return json({ error: "bad request body" }, 400); }
 
-  // Removing a photo needs no moderation.
+  const { data: prof } = await admin.from("profiles").select("photos").eq("id", uid).maybeSingle();
+  if (!prof) return json({ error: "set up your profile first" }, 409);
+  const current: string[] = prof.photos ?? [];
+  // Keeps photo_url (the main photo, used by lists and avatars) in step.
+  const save = async (photos: string[]) => {
+    const { error } = await admin.from("profiles").update({
+      photos, photo_url: photos[0] ?? null, photo_status: photos.length ? "approved" : "none",
+    }).eq("id", uid);
+    return error;
+  };
+
+  // Removing needs no moderation. `true` removes everything.
   if (body.remove) {
-    await admin.from("profiles").update({ photo_url: null, photo_status: "none" }).eq("id", uid);
-    return json({ ok: true, removed: true });
+    const gone = body.remove === true ? current : current.filter((p) => p === body.remove);
+    if (!gone.length) return json({ ok: true, photos: current });
+    await admin.storage.from(BUCKET).remove(gone);
+    const left = current.filter((p) => !gone.includes(p));
+    const err = await save(left);
+    if (err) return json({ error: err.message }, 500);
+    return json({ ok: true, photos: left });
   }
+
+  if (typeof body.main === "string") {
+    if (!current.includes(body.main)) return json({ error: "that photo isn't yours" }, 400);
+    const order = [body.main, ...current.filter((p) => p !== body.main)];
+    const err = await save(order);
+    if (err) return json({ error: err.message }, 500);
+    return json({ ok: true, photos: order });
+  }
+
+  if (current.length >= MAX_PHOTOS) return json({ ok: false, reason: `You can have up to ${MAX_PHOTOS} photos. Remove one first.`, photos: current });
 
   const bytes = typeof body.image === "string" ? decodeDataUrl(body.image) : null;
   if (!bytes) return json({ error: "no image supplied" }, 400);
@@ -183,18 +230,25 @@ Deno.serve(async (req) => {
     return json({ error: "photo checks are unavailable right now", detail: String((e as Error).message ?? e) }, 503);
   }
 
+  // Rejected photos are never stored anywhere.
   if (score > NSFW_LIMIT) {
-    await admin.from("profiles").update({ photo_status: "rejected" }).eq("id", uid);
-    return json({ ok: false, reason: "That photo doesn't meet the rules. Pick one you'd be happy showing anyone." });
+    return json({ ok: false, reason: "That photo doesn't meet the rules. Pick one you'd be happy showing anyone.", photos: current });
   }
   if (!face) {
-    await admin.from("profiles").update({ photo_status: "rejected" }).eq("id", uid);
-    return json({ ok: false, reason: "We couldn't see a face. Your profile photo should be of you." });
+    return json({ ok: false, reason: "We couldn't see a face. Your photos should be of you.", photos: current });
   }
 
-  const { error } = await admin.from("profiles")
-    .update({ photo_url: body.image, photo_status: "approved" }).eq("id", uid);
-  if (error) return json({ error: error.message }, 500);
-
-  return json({ ok: true, photo_status: "approved" });
+  const path = `${uid}/${crypto.randomUUID()}.jpg`;
+  const up = await admin.storage.from(BUCKET).upload(path, bytes, { contentType: "image/jpeg", upsert: false });
+  if (up.error) return json({ error: up.error.message }, 500);
+  // Re-read so two uploads at once can't push past four (the table's CHECK
+  // constraint is the final word; if it refuses, the file is removed again).
+  const { data: fresh } = await admin.from("profiles").select("photos").eq("id", uid).maybeSingle();
+  const photos = [...(fresh?.photos ?? current), path];
+  const err = photos.length > MAX_PHOTOS ? new Error("too many photos") : await save(photos);
+  if (err) {
+    await admin.storage.from(BUCKET).remove([path]);
+    return json({ ok: false, reason: `You can have up to ${MAX_PHOTOS} photos.`, photos: fresh?.photos ?? current });
+  }
+  return json({ ok: true, photos, added: path });
 });

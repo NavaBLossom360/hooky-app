@@ -114,13 +114,39 @@ minor/adult pair can**. Verified against the live database:
 | 20 and 17 | no |
 | Over 25 | cannot sign up |
 
-## Photo moderation
+## Photos and moderation
 
-The `photo-check` function is the only thing that can write
-`profiles.photo_url`. The profiles trigger blocks clients from setting it, so a
-modified client cannot publish a photo that skipped moderation. A photo is
-accepted only if a nudity classifier scores it below the threshold **and** a
-face is detected, because a profile photo should be of you.
+Everyone has 1 to 4 photos. Setup requires at least one, and the first is the
+main photo. They live in a **private** storage bucket, `photos`, under
+`photos/<user id>/`. `profiles.photos` lists their paths in order, and
+`photo_url` mirrors the first one for lists and avatars.
+
+The `photo-check` function is the only thing that can upload a file or write
+either column. The profiles trigger blocks clients from setting them, and the
+bucket has no insert, update or delete policy, so a modified client cannot
+publish a photo that skipped moderation. A photo is accepted only if a nudity
+classifier scores it below the threshold **and** a face is detected. Rejected
+photos are never stored. The function also removes photos, reorders them, and
+deletes all of them when an account is deleted.
+
+Photos are never public. The app gets hour-long signed URLs, and storage only
+signs a file for its owner or for someone who could see that person's profile
+(same age window, not banned, not blocked). `photos_of()` applies the same
+rule. Verified with temporary accounts:
+
+| Case | Result |
+| --- | --- |
+| 16 year old views a 17 year old's photos | Allowed |
+| 22 year old views a 17 year old's photos | No rows, no files |
+| Client writes its own `photos` / `photo_url` | Ignored |
+| Client uploads straight into the bucket | Refused by row level security |
+| Owner reads their own files | Allowed |
+
+**Browser gotcha, now fixed:** every Edge Function must allow the
+`authorization, x-client-info, apikey, content-type` headers in its CORS
+preflight. With only the first and last, browsers silently dropped the real
+request, which is why photo uploads failed from phones while working from the
+command line.
 
 This is a nudity classifier, **not** CSAM detection. A real teen app also needs
 hash-matching against known material and a human review queue. Both need

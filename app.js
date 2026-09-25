@@ -34,7 +34,7 @@
 
   const GENDERS = S.GENDERS;
   const ALL_GENDERS = GENDERS.map((g) => g.id);
-  const GENDER_PLURAL = { woman: "Women", man: "Men", nonbinary: "Non-binary people", other: "Everyone else" };
+  const GENDER_PLURAL = Object.fromEntries(GENDERS.map((g) => [g.id, g.plural]));
 
   // ---------- helpers ----------
   function toast(msg, ms = 2400) { toastEl.textContent = msg; toastEl.classList.remove("hidden"); clearTimeout(toast.t); toast.t = setTimeout(() => toastEl.classList.add("hidden"), ms); }
@@ -142,7 +142,9 @@
   function paintMeTab() {
     const img = $("#meTabIcon"); if (!img || !state.me) return;
     const slug = E.BY_CHAR[state.me.emoji];
-    if (slug) img.src = `assets/emoji/${slug}.webp`;
+    img.classList.toggle("me-photo", !!state.me.photo);
+    if (state.me.photo) img.src = state.me.photo;
+    else if (slug) img.src = `assets/emoji/${slug}.webp`;
   }
 
   // ---------- incoming calls ----------
@@ -551,15 +553,59 @@
   function setupSteps() { return ["name", "birthday", "gender", "showMe", "photo", "interests", "about"].concat(pushSupported() ? ["notify"] : []); }
   function startSetup() { state.draft = Object.assign({}, state.me || {}); state.step = 0; renderSetup(); }
 
-  function readPhoto(file, cb) {
-    const img = new Image(); const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const c = document.createElement("canvas"); const s = 512; c.width = c.height = s; const ctx = c.getContext("2d");
-      const m = Math.min(img.width, img.height); ctx.drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, s, s);
-      URL.revokeObjectURL(url); cb(c.toDataURL("image/jpeg", 0.82));
+  // Turns a picked file into a 3:4 portrait JPEG, the shape cards use, big
+  // enough to stay sharp full screen. Resolves null if it can't be read.
+  function readPhoto(file) {
+    return new Promise((resolve) => {
+      const img = new Image(); const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const W = 960, H = 1280, want = W / H;
+        let sw = img.width, sh = img.height;
+        if (sw / sh > want) sw = sh * want; else sh = sw / want;
+        const c = document.createElement("canvas"); c.width = W; c.height = H;
+        const ctx = c.getContext("2d"); ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, 0, 0, W, H);
+        URL.revokeObjectURL(url); resolve(c.toDataURL("image/jpeg", 0.85));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    });
+  }
+  async function readPhotos(files, room) {
+    const out = [];
+    for (const f of Array.from(files).slice(0, room)) { const u = await readPhoto(f); if (u) out.push(u); else toast("One of those couldn't be opened. Try a JPEG or a screenshot.", 3200); }
+    if (files.length > room) toast(`Only ${S.MAX_PHOTOS} photos fit. Kept the first ${room}.`, 3000);
+    return out;
+  }
+
+  // Four photo slots: a big main one and three small. items are
+  // { url, ref?, busy? }. Filled slots can be removed or made main.
+  function photoGrid(items) {
+    const slots = [];
+    for (let i = 0; i < S.MAX_PHOTOS; i++) {
+      const p = items[i];
+      if (p) slots.push(`<div class="pslot filled ${i === 0 ? "main" : ""}">
+          <img src="${esc(p.url)}" alt="">
+          ${i === 0 ? `<span class="pbadge">MAIN</span>` : `<button class="pmain" data-main="${i}">Make main</button>`}
+          ${p.busy ? `<span class="pbusy">${ICON.spin}</span>` : `<button class="prm" data-rm="${i}" aria-label="Remove">${ICON.x}</button>`}
+        </div>`);
+      else slots.push(`<label class="pslot empty ${i === 0 ? "main" : ""}">${i === items.length ? `<span class="pplus">${ICON.plus}</span>${i === 0 ? `<span class="phint">Add your main pic</span>` : ""}` : ""}
+          <input type="file" accept="image/*" multiple class="hidden" data-add></label>`);
+    }
+    return `<div class="pgrid" id="pgrid">${slots.join("")}</div>`;
+  }
+  function wirePhotoGrid({ add, remove, main, room }) {
+    const grid = $("#pgrid"); if (!grid) return;
+    grid.querySelectorAll("[data-add]").forEach((inp) => inp.onchange = async () => {
+      const left = room(); if (left <= 0) return toast(`You can have up to ${S.MAX_PHOTOS} photos.`);
+      const urls = await readPhotos(inp.files, left); inp.value = "";
+      if (urls.length) { buzz(8); add(urls); }
+    });
+    grid.onclick = (e) => {
+      const rm = e.target.closest("[data-rm]"), mk = e.target.closest("[data-main]");
+      if (rm) { e.preventDefault(); remove(Number(rm.dataset.rm)); }
+      if (mk) { e.preventDefault(); buzz(6); main(Number(mk.dataset.main)); }
     };
-    img.onerror = () => { URL.revokeObjectURL(url); toast("That image couldn't be opened"); };
-    img.src = url;
   }
 
   function renderSetup(errMsg) {
@@ -583,32 +629,29 @@
         <p class="tiny muted" style="padding-left:6px">This decides who you can meet. It can't be changed later, so make it real.</p>`,
     };
     if (step === "gender") cfg = {
-      title: "How do you identify?", sticker: "sparkles",
-      lead: "This shows on your profile.",
-      body: `<div class="opts" id="opts">${GENDERS.map((g) => `<button class="opt ${d.gender === g.id ? "on" : ""}" data-g="${g.id}">${esc(g.label)}<span class="check"></span></button>`).join("")}</div>`,
+      title: "I'm a…", sticker: "sparkles",
+      lead: "Pick what fits you. It shows on your profile.",
+      body: `<div class="opts" id="opts">${GENDERS.map((g) => `<button class="opt ${d.gender === g.id ? "on" : ""}" data-g="${g.id}">${emo(g.emoji, 34)}${esc(g.label)}<span class="check"></span></button>`).join("")}</div>`,
     };
     if (step === "showMe") {
       const cur = d.showMe || ALL_GENDERS;
       const all = ALL_GENDERS.every((g) => cur.includes(g));
       cfg = {
-        title: "What kind of friends?", sticker: "heart-hands",
-        lead: "Pick who you want to meet. It's private, and you can change it later.",
-        body: `<div class="opts" id="opts"><button class="opt ${all ? "on" : ""}" data-s="all">Anyone<span class="check"></span></button>
-          ${GENDERS.map((g) => `<button class="opt ${!all && cur.includes(g.id) ? "on" : ""}" data-s="${g.id}">${esc(GENDER_PLURAL[g.id])}<span class="check"></span></button>`).join("")}</div>`,
+        title: "Who do you want to meet?", sticker: "heart-hands",
+        lead: "Pick one or more. It's private, and you can change it any time in your profile.",
+        body: `<div class="opts" id="opts"><button class="opt ${all ? "on" : ""}" data-s="all">${emo("people-hugging", 34)}Everyone<span class="check"></span></button>
+          ${GENDERS.map((g) => `<button class="opt ${!all && cur.includes(g.id) ? "on" : ""}" data-s="${g.id}">${emo(g.emoji, 34)}${esc(g.plural)}<span class="check"></span></button>`).join("")}</div>`,
       };
     }
-    if (step === "photo") cfg = {
-      title: "Add your look", sticker: null,
-      body: `<label class="pick-photo ${!d.photo && !d.emoji ? "has-tips" : ""}" id="pick">
-          ${d.photo ? `<img class="photo" src="${esc(d.photo)}" alt="">` : d.emoji ? E.char(d.emoji, 110) : `<span class="plus">${ICON.plus}</span><span class="tips"><span>${emo("hourglass", 16)} Use a recent photo</span><span>${emo("camera", 16)} Clearly show your face</span></span>`}
-          ${emo("camera-flash", 72, "sticker")}
-          <input id="photoIn" type="file" accept="image/*" class="hidden">
-        </label>
-        ${d.photo ? `<button class="textbtn" id="rmPhoto" style="align-self:center">Remove photo</button>` : ""}
-        <div class="section" style="padding:14px 4px 4px">Or be an emoji</div>
-        <div class="emoji-grid" id="emojis">${E.AVATARS.map((c) => `<button class="${!d.photo && d.emoji === c ? "on" : ""}" data-e="${c}">${E.char(c, 40)}</button>`).join("")}</div>
-        <p class="tiny muted">Photos are checked automatically before anyone sees them. Pictures of other people, group shots and anything inappropriate get rejected.</p>`,
-    };
+    if (step === "photo") {
+      d.pics = d.pics || [];
+      cfg = {
+        title: "Add your pics", sticker: "camera-flash",
+        lead: `Add 1 to ${S.MAX_PHOTOS} real photos of you. The first one is your main pic.`,
+        body: `${photoGrid(d.pics)}
+          <div class="note">${emo("bulb", 24)}<div>Use recent photos that clearly show your face. Each one is checked before anyone sees it, and photos of other people, group shots or anything inappropriate get rejected.</div></div>`,
+      };
+    }
     if (step === "interests") cfg = {
       title: "What are you into?", sticker: "video-game",
       lead: `Tap at least 3. <span class="lime" id="count">${(d.tags || []).length}/8</span>`,
@@ -678,10 +721,15 @@
       paintOpts();
     }
     if (step === "photo") {
-      setOk(true);
-      $("#photoIn").onchange = (e) => { const f = e.target.files[0]; if (f) readPhoto(f, (url) => { d.photo = url; d.photoPending = true; renderSetup(); }); };
-      $("#emojis").onclick = (e) => { const b = e.target.closest("[data-e]"); if (!b) return; buzz(6); d.emoji = b.dataset.e; if (d.photo) { delete d.photo; d.photoPending = false; } renderSetup(); };
-      $("#rmPhoto") && ($("#rmPhoto").onclick = (e) => { e.preventDefault(); delete d.photo; d.photoPending = false; renderSetup(); });
+      // A real photo is required. Uploads wait until the profile exists, at
+      // the end of setup, but photos already accepted keep their ref.
+      setOk(d.pics.length > 0);
+      wirePhotoGrid({
+        add: async (urls) => { d.pics = d.pics.concat(urls.map((url) => ({ url }))).slice(0, S.MAX_PHOTOS); renderSetup(); },
+        remove: async (i) => { const p = d.pics[i]; if (p.ref) { try { await store.removePhoto(p.ref); } catch (e) { return toast(e.message); } } d.pics.splice(i, 1); renderSetup(); },
+        main: async (i) => { const p = d.pics.splice(i, 1)[0]; d.pics.unshift(p); if (p.ref) { try { await store.setMainPhoto(p.ref); } catch {} } renderSetup(); },
+        room: () => S.MAX_PHOTOS - d.pics.length,
+      });
     }
     if (step === "interests") {
       const count = () => { const n = (d.tags || []).length; $("#count").textContent = `${n}/8`; setOk(n >= 3); };
@@ -726,7 +774,7 @@
   // check here, and moderates the photo.
   async function finishSetup(btn) {
     const d = state.draft; const steps = setupSteps();
-    if (!d.emoji && !d.photo) d.emoji = "😎";
+    if (!d.emoji) d.emoji = "😎"; // only ever shown if every photo is later removed
     busy(btn, true);
     try {
       state.me = await store.saveMe(d);
@@ -738,14 +786,25 @@
       if (/at least 13|13 to 25/i.test(m)) { state.step = steps.indexOf("birthday"); return renderSetup(m); }
       return renderSetup(m || "Couldn't save your profile. Try again.");
     }
-    if (d.photoPending && d.photo) {
-      try { await store.submitPhoto(d.photo); d.photoPending = false; }
-      catch (e) {
-        delete d.photo; d.photoPending = false;
-        state.step = steps.indexOf("photo");
-        return renderSetup(`That photo wasn't accepted: ${e.message}`);
-      }
+    // Each photo goes through moderation on its own. Rejected ones drop out
+    // with the reason; if none survive, back to the photo step.
+    const pending = (d.pics || []).filter((p) => !p.ref);
+    const fails = [];
+    const status = document.createElement("p"); status.className = "tiny muted center";
+    btn.insertAdjacentElement("afterend", status);
+    for (let i = 0; i < pending.length; i++) {
+      status.textContent = pending.length > 1 ? `Checking photo ${i + 1} of ${pending.length}…` : "Checking your photo…";
+      try { const list = await store.addPhoto(pending[i].url); pending[i].ref = list[list.length - 1].ref; }
+      catch (e) { fails.push(e.message); pending[i].bad = true; }
     }
+    status.remove();
+    d.pics = (d.pics || []).filter((p) => !p.bad);
+    if (!d.pics.length) {
+      busy(btn, false);
+      state.step = steps.indexOf("photo");
+      return renderSetup(fails[0] ? `That photo wasn't accepted: ${fails[0]}` : "Add at least one photo of you.");
+    }
+    if (fails.length) toast(`${fails.length} photo${fails.length > 1 ? "s weren't" : " wasn't"} accepted: ${fails[0]}`, 4200);
     saveAgeCheckLocal(null);
     state.me = await store.getMe();
     paintMeTab();
@@ -773,16 +832,21 @@
   // ---------- Catch (the deck) ----------
   function cardHtml(u, idx) {
     // Emoji people get their own little world: their interests float behind.
-    let hero;
-    if (u.photo) hero = `<img class="photo" src="${esc(u.photo)}" alt="">`;
-    else {
+    let hero, bars = "";
+    const pics = (u.photos && u.photos.length) ? u.photos : u.photo ? [u.photo] : [];
+    if (pics.length) {
+      // Every photo is in the card; tapping the left or right half flips
+      // between them, and the bars at the top show which one is up.
+      hero = pics.map((src, i) => `<img class="photo ${i ? "" : "on"}" src="${esc(src)}" alt="" ${i ? 'loading="lazy"' : ""}>`).join("");
+      if (pics.length > 1) bars = `<div class="bars">${pics.map((_, i) => `<i class="${i ? "" : "on"}"></i>`).join("")}</div>`;
+    } else {
       const bits = (u.tags || []).slice(0, 4).map((t) => E.tagSlug(t));
       const spots = [[8, 28, 54, -14], [72, 22, 46, 12], [12, 64, 44, 10], [74, 60, 58, -8], [40, 12, 36, 6], [44, 80, 40, -6]];
       const confetti = spots.map(([x, y, s, r], i) => `<span class="confetti-emo" style="left:${x}%;top:${y}%;transform:rotate(${r}deg)">${emo(bits[i % Math.max(1, bits.length)] || "sparkles", s)}</span>`).join("");
       hero = `${confetti}${E.char(u.emoji || "😎", 220, "big")}`;
     }
-    return `<div class="card-hero" style="background:${u.gradient}">${hero}</div><div class="card-shade"></div>
-      <div class="card-top">
+    return `<div class="card-hero" style="background:${u.gradient}">${hero}</div><div class="card-shade"></div>${bars}
+      <div class="card-top ${bars ? "with-bars" : ""}">
         <div class="display card-name">${esc(u.name)} <span class="age">${u.age}</span><span class="verified" title="Age checked"></span></div>
         ${u.region ? `<div class="card-meta">${emo("pin", 18)} ${esc(u.region)}</div>` : `<div style="height:10px"></div>`}
         <div class="tags mini">${(u.tags || []).slice(0, 4).map((t) => E.tag(t)).join("")}</div>
@@ -797,6 +861,11 @@
     if (!me) return boot();
     let all = [];
     try { all = await store.candidates(); } catch (e) { toast(e.message); }
+    // Every photo for everyone in this batch, in one round trip.
+    try {
+      const pm = await store.photosFor(all.map((u) => u.id));
+      all.forEach((u) => { if (pm[u.id] && pm[u.id].length) u.photos = pm[u.id]; });
+    } catch {}
     const onlineCount = all.filter((c) => c.online).length;
     let cands = state.onlineOnly ? all.filter((c) => c.online) : all;
     const left = await store.likesRemaining();
@@ -840,11 +909,28 @@
     deck.addEventListener("click", (e) => { const r = e.target.closest("[data-report]"); if (r) { e.stopPropagation(); openReport(cands.find((c) => c.id === r.dataset.report), () => { cands.shift(); draw(); }); } });
 
     function attachDrag(el, u) {
-      let sx = 0, sy = 0, dx = 0, dragging = false;
+      let sx = 0, sy = 0, dx = 0, dy = 0, dragging = false, shown = 0;
       const stL = $(".stamp.like", el), stN = $(".stamp.nope", el);
-      el.onpointerdown = (e) => { if (e.target.closest("[data-report]")) return; dragging = true; sx = e.clientX; sy = e.clientY; el.setPointerCapture(e.pointerId); el.style.transition = "none"; };
-      el.onpointermove = (e) => { if (!dragging) return; dx = e.clientX - sx; const dy = e.clientY - sy; el.style.transform = `translate(${dx}px,${dy * 0.4}px) rotate(${dx / 16}deg)`; stL.style.opacity = Math.max(0, Math.min(1, dx / 90)); stN.style.opacity = Math.max(0, Math.min(1, -dx / 90)); };
-      const end = () => { if (!dragging) return; dragging = false; if (dx > 110) fly(el, u, "like"); else if (dx < -110) fly(el, u, "nope"); else { el.style.transition = "transform .3s cubic-bezier(.2,.9,.3,1.2)"; el.style.transform = ""; stL.style.opacity = stN.style.opacity = 0; } dx = 0; };
+      const photos = el.querySelectorAll(".card-hero img.photo"), bars = el.querySelectorAll(".bars i");
+      // A tap (not a drag) on the left or right half flips through photos.
+      const flip = (x) => {
+        if (photos.length < 2) return;
+        const r = el.getBoundingClientRect();
+        const next = x < r.left + r.width / 2 ? shown - 1 : shown + 1;
+        if (next < 0 || next >= photos.length) { el.animate([{ transform: "translateX(0)" }, { transform: `translateX(${next < 0 ? 8 : -8}px)` }, { transform: "translateX(0)" }], { duration: 220 }); return; }
+        photos[shown].classList.remove("on"); bars[shown].classList.remove("on");
+        shown = next; buzz(4);
+        photos[shown].classList.add("on"); bars[shown].classList.add("on");
+      };
+      el.onpointerdown = (e) => { if (e.target.closest("[data-report]")) return; dragging = true; sx = e.clientX; sy = e.clientY; dx = dy = 0; el.setPointerCapture(e.pointerId); el.style.transition = "none"; };
+      el.onpointermove = (e) => { if (!dragging) return; dx = e.clientX - sx; dy = e.clientY - sy; el.style.transform = `translate(${dx}px,${dy * 0.4}px) rotate(${dx / 16}deg)`; stL.style.opacity = Math.max(0, Math.min(1, dx / 90)); stN.style.opacity = Math.max(0, Math.min(1, -dx / 90)); };
+      const end = (e) => {
+        if (!dragging) return; dragging = false;
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8 && e && e.type === "pointerup") { el.style.transform = ""; flip(e.clientX); }
+        else if (dx > 110) fly(el, u, "like"); else if (dx < -110) fly(el, u, "nope");
+        else { el.style.transition = "transform .3s cubic-bezier(.2,.9,.3,1.2)"; el.style.transform = ""; stL.style.opacity = stN.style.opacity = 0; }
+        dx = dy = 0;
+      };
       el.onpointerup = end; el.onpointercancel = end;
     }
     async function fly(el, u, dir) {
@@ -1079,7 +1165,7 @@
     const blocked = await store.blocked();
     const g = (GENDERS.find((x) => x.id === me.gender) || {}).label || "Not set";
     const show = me.showMe || ALL_GENDERS;
-    const showLabel = ALL_GENDERS.every((x) => show.includes(x)) ? "Anyone" : show.map((x) => GENDER_PLURAL[x]).join(", ");
+    const showLabel = ALL_GENDERS.every((x) => show.includes(x)) ? "Everyone" : show.map((x) => GENDER_PLURAL[x]).join(", ");
     const checked = me.verification ? `<span class="pill ok">${emo("check", 16)} Age checked</span>` : "";
     paint(`${appbar(`<h1 class="display title lime">Me</h1><div class="grow"></div>${plusChip(me)}`)}
       <div class="me-hero">
@@ -1089,8 +1175,10 @@
         <div class="pills">${checked}<span class="pill">${emo("pin", 16)} ${esc(me.region || "Somewhere")}</span>${me.premium ? `<span class="pill plus">${emo("crown", 16)} ${me.tier === "max" ? "Hooky Max" : "Hooky+"}</span>` : ""}</div>
         ${me.bio ? `<p class="small" style="margin:0 0 12px">${esc(me.bio)}</p>` : ""}
         <div class="tags mini">${(me.tags || []).map((t) => E.tag(t)).join("")}</div>
+        ${(me.photos || []).length > 1 ? `<div class="me-strip">${me.photos.map((p) => `<img src="${esc(p.url)}" alt="">`).join("")}</div>` : ""}
         <br><button class="btn white" id="edit">Edit profile</button>
       </div>
+      ${(me.photos || []).length ? "" : `<div style="margin:14px 16px 0"><div class="promo">${emo("camera-flash", 70, "sticker")}<div class="display">Add your pics</div><p>Profiles with real photos get way more catches. Add up to ${S.MAX_PHOTOS}.</p><button class="btn lime" id="addPics">Add photos</button></div></div>`}
       ${me.premium ? "" : `<div style="margin:14px 16px 0"><div class="promo">${emo("crown", 70, "sticker")}<div class="display">Get Hooky+</div><p>Unlimited hooks, see who hooked you, undo passes and your own room.</p><button class="btn lime" id="plus">See plans</button></div></div>`}
       <div class="group"><h3>Safety</h3>
         ${settingRow({ slug: "shield", label: "Who you can meet", val: `Ages ${b.label}`, chev: false })}
@@ -1115,6 +1203,7 @@
       </div>
       <div class="foot-note">Hooky ${store.kind === "local" ? "demo" : ""} · Friends, not dating · 13 to 25<br>3D emoji by Microsoft Fluent Emoji (MIT)</div>`);
     $("#edit").onclick = () => renderSettings();
+    $("#addPics") && ($("#addPics").onclick = () => renderSettings());
     $("#gShow").onclick = $("#gMe").onclick = () => renderSettings();
     $("#plusChip").onclick = () => renderPlus();
     $("#plus") && ($("#plus").onclick = () => renderPlus());
@@ -1187,22 +1276,20 @@
   async function renderSettings() {
     const me = state.me = await store.getMe();
     const d = Object.assign({ showMe: ALL_GENDERS.slice() }, me);
+    // Photos save the moment they change (each is moderated on its own); the
+    // Save button covers everything else.
+    d.pics = (me.photos || []).map((p) => ({ url: p.url, ref: p.ref }));
     setTabsVisible(false);
     function draw(errMsg) {
       paint(`<div class="chatbar"><button class="back" id="back" aria-label="Back">${ICON.back}</button><div class="who"><b style="font-size:20px">Edit profile</b></div><button class="btn sm lime" id="save">Save</button></div>
         <div class="flow" style="padding-top:18px;gap:18px">
-          <label class="pick-photo" style="margin:4px auto 0;width:140px;height:140px">
-            ${d.photo ? `<img class="photo" src="${esc(d.photo)}" alt="">` : E.char(d.emoji || "😎", 90)}
-            ${emo("camera-flash", 60, "sticker")}<input id="photoIn" type="file" accept="image/*" class="hidden">
-          </label>
-          ${d.photo ? `<button class="textbtn" id="rmPhoto" style="align-self:center">Remove photo</button>` : ""}
-          <div class="emoji-grid" id="emojis">${E.AVATARS.map((c) => `<button class="${!d.photo && d.emoji === c ? "on" : ""}" data-e="${c}">${E.char(c, 36)}</button>`).join("")}</div>
+          <div class="field"><label>Your pics (up to ${S.MAX_PHOTOS}) · changes save right away</label>${photoGrid(d.pics)}</div>
           <div class="field"><label>Nickname</label><input id="name" class="input" maxlength="20" value="${esc(d.name || "")}"></div>
           <div class="field"><label>Where you're at</label><input id="region" class="input" maxlength="30" value="${esc(d.region || "")}"></div>
           <div class="field"><label>Bio</label><textarea id="bio" class="input" maxlength="140">${esc(d.bio || "")}</textarea></div>
           <div class="field"><label>Interests (3 to 8)</label><div class="tags" id="tags">${E.INTERESTS.map(([t]) => E.tag(t, { button: true, data: true, on: (d.tags || []).includes(t) })).join("")}</div></div>
-          <div class="field"><label>I am</label><div class="tags" id="gender">${GENDERS.map((x) => `<button class="tag ${d.gender === x.id ? "on" : ""}" style="--tc:var(--lime)" data-g="${x.id}">${esc(x.label)}</button>`).join("")}</div></div>
-          <div class="field"><label>Show me</label><div class="tags" id="showMe">${GENDERS.map((x) => `<button class="tag ${(d.showMe || []).includes(x.id) ? "on" : ""}" style="--tc:var(--lime)" data-s="${x.id}">${esc(GENDER_PLURAL[x.id])}</button>`).join("")}</div>
+          <div class="field"><label>I'm a</label><div class="tags" id="gender">${GENDERS.map((x) => `<button class="tag ${d.gender === x.id ? "on" : ""}" style="--tc:var(--lime)" data-g="${x.id}">${emo(x.emoji, 20)}${esc(x.label)}</button>`).join("")}</div></div>
+          <div class="field"><label>Who I want to meet</label><div class="tags" id="showMe">${GENDERS.map((x) => `<button class="tag ${(d.showMe || []).includes(x.id) ? "on" : ""}" style="--tc:var(--lime)" data-s="${x.id}">${emo(x.emoji, 20)}${esc(x.plural)}</button>`).join("")}</div>
             <p class="tiny muted" style="margin:4px 4px 0">Matching is mutual: you both have to be in each other's "show me".</p></div>
           <div class="group" style="margin:0">
             ${settingRow({ slug: "cake", label: "Birthday", val: `${esc(me.birthdate || "")} · locked`, chev: false })}
@@ -1212,9 +1299,33 @@
           <div style="height:10px"></div>
         </div>`);
       $("#back").onclick = () => showTab("profile");
-      $("#emojis").onclick = (e) => { const b = e.target.closest("[data-e]"); if (!b) return; grab(); d.emoji = b.dataset.e; if (d.photo) d.photoRemoved = true; delete d.photo; d.photoPending = false; draw(); };
-      $("#rmPhoto") && ($("#rmPhoto").onclick = (e) => { e.preventDefault(); grab(); delete d.photo; d.photoRemoved = true; d.photoPending = false; draw(); });
-      $("#photoIn").onchange = (e) => { const f = e.target.files[0]; if (f) { grab(); readPhoto(f, (url) => { d.photo = url; d.photoPending = true; draw(); }); } };
+      const fromServer = (list) => { d.pics = list.map((p) => ({ url: p.url, ref: p.ref })); };
+      wirePhotoGrid({
+        room: () => S.MAX_PHOTOS - d.pics.length,
+        add: async (urls) => {
+          grab();
+          for (const url of urls) {
+            d.pics.push({ url, busy: true }); draw();
+            try { fromServer(await store.addPhoto(url)); toast("Photo added"); }
+            catch (e) { d.pics = d.pics.filter((p) => p.url !== url); draw(); modal(`${emo("see-no-evil", 70, "sheet-sticker sticker")}<h2 class="center">Photo not added</h2><p class="muted center">${esc(e.message)}</p><button class="btn lime" id="ok">Got it</button>`, () => { $("#ok").onclick = closeModal; }); return; }
+            draw();
+          }
+          state.me = await store.getMe(); paintMeTab();
+        },
+        remove: async (i) => {
+          grab();
+          if (d.pics.length === 1) return toast("Add another photo before removing your last one.", 3000);
+          const p = d.pics[i]; p.busy = true; draw();
+          try { fromServer(await store.removePhoto(p.ref)); } catch (e) { p.busy = false; toast(e.message); }
+          draw(); state.me = await store.getMe(); paintMeTab();
+        },
+        main: async (i) => {
+          grab();
+          const p = d.pics[i];
+          try { fromServer(await store.setMainPhoto(p.ref)); toast("Main photo updated"); } catch (e) { toast(e.message); }
+          draw(); state.me = await store.getMe(); paintMeTab();
+        },
+      });
       $("#tags").onclick = (e) => {
         const b = e.target.closest("[data-t]"); if (!b) return;
         const t = b.dataset.t; const cur = d.tags || [];
@@ -1241,14 +1352,9 @@
         const save = $("#save"); save.disabled = true; save.textContent = "Saving…";
         try {
           state.me = await store.saveMe(d);
-          // Photos go through moderation separately; the server is the only
-          // thing that can publish one.
-          if (d.photoPending && d.photo) { save.textContent = "Checking…"; await store.submitPhoto(d.photo); d.photoPending = false; }
-          else if (d.photoRemoved) { await store.submitPhoto(null); d.photoRemoved = false; }
-          state.me = await store.getMe(); paintMeTab();
+          paintMeTab();
           toast("Saved"); showTab("profile");
         } catch (e2) {
-          if (d.photoPending) { delete d.photo; d.photoPending = false; return draw(`That photo wasn't accepted: ${e2.message}`); }
           save.disabled = false; save.textContent = "Save";
           err.textContent = e2.message || "Couldn't save.";
         }

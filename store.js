@@ -80,10 +80,16 @@
     async init() { return true; }
     async reset() { localStorage.removeItem(this.key); this.load(); this.emit(); }
 
-    async getMe() { return this.db.me ? withBracket(Object.assign({ premium: this.db.premium, tier: this.db.tier }, this.db.me)) : null; }
+    async getMe() {
+      if (!this.db.me) return null;
+      const photos = this.photoRefs();
+      return withBracket(Object.assign({ premium: this.db.premium, tier: this.db.tier }, this.db.me, { photos, photo: photos.length ? photos[0].url : null }));
+    }
     // Mirrors the server: a profile can only be created after the age check,
-    // with a birthday that fits what the camera saw.
-    async saveMe(profile) {
+    // with a birthday that fits what the camera saw. Photos are never saved
+    // here, only through addPhoto and friends, like the real backend.
+    async saveMe(input) {
+      const { photos, photo, pics, ...profile } = input;
       profile.age = S.ageFromBirthdate(profile.birthdate);
       if (!this.db.me) {
         const ac = this.db.ageCheck;
@@ -104,13 +110,20 @@
       me.verification = "estimated"; me.verificationProvider = "on-device"; this.save();
     }
     async setPremium(on, tier) { this.db.premium = !!on; this.db.tier = on ? (tier || "plus") : null; this.save(); }
-    // Demo stand-in for server-side photo moderation.
-    async submitPhoto(dataUrl) {
-      if (!dataUrl) { this.db.me = Object.assign({}, this.db.me, { photo: null }); this.save(); return { ok: true, removed: true }; }
-      this.db.me = Object.assign({}, this.db.me, { photo: dataUrl });
-      this.save();
-      return { ok: true, photo_status: "approved" };
+    // ----- photos (demo stand-in for the photo-check function) -----
+    // Up to four, stored as data URLs. The ref IS the URL here; on the real
+    // backend it is a storage path.
+    photoRefs() { return ((this.db.me && this.db.me.pics) || []).map((u) => ({ ref: u, url: u })); }
+    async addPhoto(dataUrl) {
+      const me = this.db.me; if (!me) throw new Error("set up your profile first");
+      me.pics = me.pics || [];
+      if (me.pics.length >= S.MAX_PHOTOS) { const e = new Error(`You can have up to ${S.MAX_PHOTOS} photos. Remove one first.`); e.rejected = true; throw e; }
+      me.pics.push(dataUrl); this.save();
+      return this.photoRefs();
     }
+    async removePhoto(ref) { const me = this.db.me; me.pics = (me.pics || []).filter((u) => u !== ref); this.save(); return this.photoRefs(); }
+    async setMainPhoto(ref) { const me = this.db.me; me.pics = [ref].concat((me.pics || []).filter((u) => u !== ref)); this.save(); return this.photoRefs(); }
+    async photosFor() { return {}; }
     async signOut() { await this.reset(); }
     async deleteAccount() { await this.reset(); }
 
@@ -370,7 +383,10 @@
       if (!this.uid) return null;
       const { data } = await this.sb.from("profiles").select("*").eq("id", this.uid).maybeSingle();
       if (!data) return null;
-      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photo: data.photo_url, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), tier: data.premium_tier, photoStatus: data.photo_status, verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider, email: this.session.user.email });
+      const paths = (data.photos || []).slice();
+      await this.signPaths(paths);
+      const photos = paths.map((p) => ({ ref: p, url: this.url(p) })).filter((x) => x.url);
+      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photos, photo: photos.length ? photos[0].url : null, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), tier: data.premium_tier, photoStatus: data.photo_status, verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider, email: this.session.user.email });
     }
     async saveMe(p) {
       // photo_url is deliberately absent: only photo-check may write it, so a
@@ -383,10 +399,53 @@
       return this.getMe();
     }
     async setPremium() { throw new Error("Hooky+ is granted server-side after a store purchase webhook."); }
-    async deleteAccount() { const { error } = await this.sb.rpc("delete_my_account"); if (error) throw error; await this.signOut(); }
+    // Photo files go first: once the account is gone nothing could remove them.
+    async deleteAccount() {
+      try { await this.photoOp({ remove: true }); } catch {}
+      const { error } = await this.sb.rpc("delete_my_account"); if (error) throw error; await this.signOut();
+    }
 
-    map(r) { return withBracket({ id: r.id, name: r.display_name, age: r.age, emoji: r.emoji, region: r.region, bio: r.bio, tags: r.interests || [], photo: r.photo_url, gender: r.gender, online: this.online.has(r.id) }); }
-    async candidates() { const { data, error } = await this.sb.rpc("discover_candidates", { lim: 20 }); if (error) throw error; return data.map((r) => this.map(r)).sort((a, b) => Number(b.online) - Number(a.online)); }
+    // ----- photos -----
+    // Photos live in a private storage bucket. The database hands out paths,
+    // and the client swaps them for signed URLs that expire after an hour.
+    // Storage only signs a path for someone allowed to see that person.
+    async signPaths(paths) {
+      this.signed = this.signed || new Map();
+      const soon = Date.now() + 5 * 60000;
+      const need = [...new Set(paths.filter((p) => p && !p.startsWith("data:") && !((this.signed.get(p) || {}).exp > soon)))];
+      if (!need.length) return;
+      const { data } = await this.sb.storage.from("photos").createSignedUrls(need, 3600);
+      const exp = Date.now() + 3600000;
+      (data || []).forEach((d) => { if (d.signedUrl && !d.error) this.signed.set(d.path, { url: d.signedUrl, exp }); });
+    }
+    url(p) { if (!p) return null; if (p.startsWith("data:")) return p; const s = this.signed && this.signed.get(p); return s ? s.url : null; }
+    // Everything the moderation function returns comes back as fresh refs.
+    async photoOp(body) {
+      const { data, error } = await this.sb.functions.invoke("photo-check", { body });
+      if (error) {
+        let detail = "";
+        try { detail = (await error.context.json()).error || ""; } catch {}
+        throw new Error(detail || error.message);
+      }
+      if (data.photos) await this.signPaths(data.photos);
+      if (data.ok === false) { const e = new Error(data.reason || "That photo wasn't accepted."); e.rejected = true; throw e; }
+      return (data.photos || []).map((p) => ({ ref: p, url: this.url(p) }));
+    }
+    addPhoto(dataUrl) { return this.photoOp({ image: dataUrl }); }
+    removePhoto(ref) { return this.photoOp({ remove: ref }); }
+    setMainPhoto(ref) { return this.photoOp({ main: ref }); }
+    // All photos for a set of people, as { id: [url, ...] }, for the deck.
+    async photosFor(ids) {
+      if (!ids.length) return {};
+      const { data, error } = await this.sb.rpc("photos_of", { ids });
+      if (error || !data) return {};
+      await this.signPaths(data.flatMap((r) => r.photos || []));
+      return Object.fromEntries(data.map((r) => [r.id, (r.photos || []).map((p) => this.url(p)).filter(Boolean)]));
+    }
+    async signRows(rows) { await this.signPaths((rows || []).map((r) => r.photo_url)); return rows || []; }
+
+    map(r) { return withBracket({ id: r.id, name: r.display_name, age: r.age, emoji: r.emoji, region: r.region, bio: r.bio, tags: r.interests || [], photo: this.url(r.photo_url), gender: r.gender, online: this.online.has(r.id) }); }
+    async candidates() { const { data, error } = await this.sb.rpc("discover_candidates", { lim: 20 }); if (error) throw error; return (await this.signRows(data)).map((r) => this.map(r)).sort((a, b) => Number(b.online) - Number(a.online)); }
     async likesRemaining() { const { data } = await this.sb.rpc("likes_remaining"); return data === -1 ? Infinity : data; }
     async swipe(id, dir) {
       const { data, error } = await this.sb.rpc("swipe", { target: id, direction: dir });
@@ -395,10 +454,10 @@
       return { matched: data ? { id: data, userId: id } : null };
     }
     async undo() { if (!this.lastSwipe) return false; const { error } = await this.sb.rpc("undo_swipe", { target: this.lastSwipe }); this.lastSwipe = null; return !error; }
-    async whoLikedMe() { const { data, error } = await this.sb.rpc("who_liked_me"); if (error) throw error; return data.map((r) => this.map(r)); }
+    async whoLikedMe() { const { data, error } = await this.sb.rpc("who_liked_me"); if (error) throw error; return (await this.signRows(data)).map((r) => this.map(r)); }
     async matches() {
       const { data, error } = await this.sb.rpc("my_matches"); if (error) throw error;
-      return data.map((r) => ({ id: r.match_id, userId: r.other_id, at: r.created_at, user: this.map(Object.assign({}, r, { id: r.other_id })), online: this.online.has(r.other_id), last: r.last_text ? { text: r.last_text, at: new Date(r.last_at).getTime(), from: r.last_from } : null, unread: r.unread }));
+      return (await this.signRows(data)).map((r) => ({ id: r.match_id, userId: r.other_id, at: r.created_at, user: this.map(Object.assign({}, r, { id: r.other_id })), online: this.online.has(r.other_id), last: r.last_text ? { text: r.last_text, at: new Date(r.last_at).getTime(), from: r.last_from } : null, unread: r.unread }));
     }
     async messages(matchId) {
       await this.sb.rpc("mark_read", { mid: matchId });
@@ -418,7 +477,7 @@
     async report(userId, reason, details) { await this.sb.from("reports").insert({ reported_id: userId, reason, details }); await this.sb.rpc("swipe", { target: userId, direction: "nope" }); }
     async block(userId) { await this.sb.from("blocks").insert({ blocked_id: userId }); }
     async unblock(userId) { await this.sb.from("blocks").delete().eq("blocker_id", this.uid).eq("blocked_id", userId); }
-    async blocked() { const { data } = await this.sb.rpc("my_blocked"); return (data || []).map((r) => this.map(r)); }
+    async blocked() { const { data } = await this.sb.rpc("my_blocked"); return (await this.signRows(data)).map((r) => this.map(r)); }
     async totalUnread() { const { data } = await this.sb.rpc("total_unread"); return data || 0; }
 
     // ----- push -----
@@ -468,19 +527,6 @@
       try { await this.sb.functions.invoke("push-send", { body: { match_id: matchId, kind } }); } catch {}
     }
 
-    // Photo moderation runs server-side; the profiles trigger blocks the client
-    // from writing photo_url, so this is the only way a photo gets published.
-    async submitPhoto(dataUrl) {
-      const body = dataUrl ? { image: dataUrl } : { remove: true };
-      const { data, error } = await this.sb.functions.invoke("photo-check", { body });
-      if (error) {
-        let detail = "";
-        try { detail = (await error.context.json()).error || ""; } catch {}
-        throw new Error(detail || error.message);
-      }
-      if (!data.ok && !data.removed) throw new Error(data.reason || "That photo wasn't accepted.");
-      return data;
-    }
 
     // ----- private rooms -----
     async roomsAllowed() { const { data } = await this.sb.rpc("rooms_allowed"); return data || 0; }

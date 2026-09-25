@@ -4,6 +4,7 @@
 (function () {
   const MIN_AGE = 13;
   const MAX_AGE = 25;
+  const MAX_PHOTOS = 4;
   const WINDOW = 2; // years either side
 
   // Who a person of this age is allowed to see.
@@ -64,11 +65,13 @@
     return `${Math.max(10, e - 3)}–${e + 3}`;
   }
 
+  // label: how you describe yourself. plural: who you want to meet.
+  // emoji: the 3D sticker shown beside it (assets/emoji).
   const GENDERS = [
-    { id: "woman", label: "Woman" },
-    { id: "man", label: "Man" },
-    { id: "nonbinary", label: "Non-binary" },
-    { id: "other", label: "Other" },
+    { id: "woman", label: "Girl", plural: "Girls", emoji: "woman" },
+    { id: "man", label: "Guy", plural: "Guys", emoji: "man" },
+    { id: "nonbinary", label: "Non-binary", plural: "Non-binary people", emoji: "person" },
+    { id: "other", label: "Something else", plural: "Everyone else", emoji: "sparkles" },
   ];
 
   // Message filter. For anyone under 18, and for any conversation that includes
@@ -139,7 +142,7 @@
   }
 
   window.HookySafety = {
-    MIN_AGE, MAX_AGE, GENDERS, TIERS, PERIODS, REPORT_REASONS, AGE_CHECK,
+    MIN_AGE, MAX_AGE, MAX_PHOTOS, GENDERS, TIERS, PERIODS, REPORT_REASONS, AGE_CHECK,
     ageFromBirthdate, visibleRange, ageBand, canSee, isMinor, checkMessage,
     priceFor, roomsAllowed, ageFitsEstimate, estimateAllowsSignup, estimateLabel,
   };

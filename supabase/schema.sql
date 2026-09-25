@@ -74,6 +74,7 @@ alter table profiles add column if not exists age_estimate_low int;
 alter table profiles add column if not exists age_estimate_high int;
 alter table profiles add column if not exists premium_tier text check (premium_tier in ('plus', 'max'));
 alter table profiles add column if not exists photo_status text not null default 'none' check (photo_status in ('none', 'pending', 'approved', 'rejected'));
+alter table profiles add column if not exists photos text[] not null default '{}';
 
 -- The face age check runs on the person's own device before they can sign up
 -- (agecheck.js); no image ever reaches the server. The result, an estimated
@@ -125,6 +126,7 @@ begin
       new.premium_tier := old.premium_tier;
       new.banned_at := old.banned_at;
       new.photo_url := old.photo_url;
+      new.photos := old.photos;
       new.photo_status := old.photo_status;
       new.verification_provider := old.verification_provider;
       new.verified_at := old.verified_at;
@@ -139,6 +141,7 @@ begin
     new.premium_tier := null;
     new.banned_at := null;
     new.photo_url := null;
+    new.photos := '{}';
     new.photo_status := 'none';
     -- A profile can only be created after the on-device age check, and the
     -- birthday has to be consistent with what the camera saw.
@@ -717,6 +720,48 @@ end $$;
 do $$ begin
   alter publication supabase_realtime add table room_messages;
 exception when duplicate_object then null; end $$;
+
+-- ---------- profile photos ----------
+-- Up to four photos per person, stored as files in a PRIVATE storage bucket
+-- under photos/<user id>/. profiles.photos holds their paths in display order
+-- and photo_url mirrors the first one, the main photo. Only the photo-check
+-- Edge Function writes either column or uploads files (it moderates first);
+-- clients have no insert, update or delete policy on the bucket.
+do $$ begin
+  alter table profiles add constraint profiles_max_four_photos check (cardinality(photos) <= 4);
+exception when duplicate_object then null; end $$;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('photos', 'photos', false, 3000000, array['image/jpeg'])
+on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+-- Who may see a person's photos: themselves, or anyone who could see their
+-- profile at all (same age window, not banned, not blocked either way).
+create or replace function can_view_photos_of(owner_folder text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select owner_folder = auth.uid()::text
+      or exists (select 1 from profiles p
+                 where p.id::text = owner_folder
+                   and can_see(my_age(), years_old(p.birthdate))
+                   and p.banned_at is null
+                   and not is_blocked_either_way(p.id))
+$$;
+
+-- Reading a file (which is what creating a signed URL needs) follows the same
+-- rule. Files are only ever reachable through short-lived signed URLs.
+drop policy if exists photos_read on storage.objects;
+create policy photos_read on storage.objects for select to authenticated using (
+  bucket_id = 'photos' and can_view_photos_of((storage.foldername(name))[1])
+);
+
+-- Every photo path for a set of people, filtered by the same rule.
+create or replace function photos_of(ids uuid[])
+returns table (id uuid, photos text[])
+language sql stable security definer set search_path = public as $$
+  select p.id, p.photos from profiles p
+  where p.id = any(ids) and can_view_photos_of(p.id::text)
+$$;
 
 -- ---------- hardening ----------
 -- Leftovers from the old fixed-bracket design.

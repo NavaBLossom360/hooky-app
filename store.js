@@ -105,6 +105,9 @@
       return this.getMe();
     }
     ageCheck() { return this.db.ageCheck || null; }
+    terms() { return this.db.terms || null; }
+    termsAccepted() { return !!this.db.terms && this.db.terms.version === S.TERMS_VERSION; }
+    async saveTerms(t) { this.db.terms = t; this.save(); }
     async saveAgeCheck(ac) { this.db.ageCheck = ac; this.save(); }
     async claimAgeCheck() {
       const me = this.db.me, ac = this.db.ageCheck;
@@ -362,8 +365,8 @@
     // metadata. That number is all that's kept from the check; the server
     // compares it to the birthday when the profile is created.
     get redirect() { return location.origin + location.pathname; }
-    async signUp(email, password, ageCheck) {
-      const { data, error } = await this.sb.auth.signUp({ email, password, options: { emailRedirectTo: this.redirect, data: { age_check: ageCheck } } });
+    async signUp(email, password, ageCheck, terms) {
+      const { data, error } = await this.sb.auth.signUp({ email, password, options: { emailRedirectTo: this.redirect, data: { age_check: ageCheck, terms } } });
       if (error) throw friendlyAuth(error);
       // With email confirmation on, an address that already has an account
       // comes back as a user with no identities instead of an error.
@@ -390,6 +393,14 @@
       this.recovery = false;
     }
     ageCheck() { return (this.session && this.session.user.user_metadata && this.session.user.user_metadata.age_check) || null; }
+    // Which version of the Terms this account agreed to, and when.
+    terms() { return (this.session && this.session.user.user_metadata && this.session.user.user_metadata.terms) || null; }
+    termsAccepted() { const t = this.terms(); return !!t && t.version === S.TERMS_VERSION; }
+    async saveTerms(t) {
+      const { data, error } = await this.sb.auth.updateUser({ data: { terms: t } });
+      if (error) throw friendlyAuth(error);
+      if (data && data.user && this.session) this.session = Object.assign({}, this.session, { user: data.user });
+    }
     // For accounts that exist but never did the check (made before it existed).
     async saveAgeCheck(ac) {
       const { data, error } = await this.sb.auth.updateUser({ data: { age_check: ac } });

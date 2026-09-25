@@ -1,12 +1,12 @@
 // Hooky service worker: makes the app installable, lets the shell load offline,
 // and receives push notifications for new catches and messages.
 // Network first, cache fallback, so updates show up right away when online.
-const CACHE = "hooky-v9";
+const CACHE = "hooky-v10";
 // The age check (vendor/face-api, about 2 MB) and the Live safety check
 // (vendor/onnxruntime + vendor/nsfw, about 20 MB) are not precached; they are
 // cached the first time someone uses them.
 const SHELL = ["./", "index.html", "config.js", "styles.css", "safety.js", "emoji.js", "store.js", "agecheck.js", "call.js", "roulette.js", "app.js", "icon.svg", "manifest.json", "legal.html", "assets/wordmark.png", "assets/icon-192.png",
-  ...["fishing-pole", "speech", "couch", "sunglasses", "shield", "phone", "prohibited", "locked", "wastebasket", "camera", "key", "mailbox", "waving-hand", "cake", "sparkles", "heart-hands", "camera-flash", "video-game", "globe", "megaphone", "crown", "eyes", "flag", "pin", "woman", "man", "person", "people-hugging", "video-camera"].map((s) => `assets/emoji/${s}.webp`)];
+  ...["fishing-pole", "speech", "couch", "sunglasses", "shield", "phone", "prohibited", "locked", "wastebasket", "camera", "key", "mailbox", "waving-hand", "cake", "sparkles", "heart-hands", "camera-flash", "video-game", "globe", "megaphone", "crown", "eyes", "flag", "pin", "woman", "man", "person", "people-hugging", "video-camera", "handshake"].map((s) => `assets/emoji/${s}.webp`)];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

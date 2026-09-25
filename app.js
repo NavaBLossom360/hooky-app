@@ -31,6 +31,8 @@
   const SUPPORT_EMAIL = "support@example.com"; // change before shipping
   const state = { me: null, tab: "discover", draft: {}, step: 0, chatId: null, onlineOnly: false, inCall: false, ageCheck: null, leave: null };
   try { state.ageCheck = JSON.parse(sessionStorage.getItem("hooky.ageCheck")) || null; } catch {}
+  try { state.terms = JSON.parse(sessionStorage.getItem("hooky.terms")) || null; } catch {}
+  if (state.terms && state.terms.version !== S.TERMS_VERSION) state.terms = null;
 
   const GENDERS = S.GENDERS;
   const ALL_GENDERS = GENDERS.map((g) => g.id);
@@ -90,9 +92,17 @@
       <div class="flow-foot">${foot}</div>
     </div>`;
   }
+  // The signup draft (age check result and terms acceptance) lives in the tab
+  // until the account exists, so a reload mid-signup doesn't lose it. Passing
+  // null clears the whole draft.
   function saveAgeCheckLocal(ac) {
     state.ageCheck = ac;
     try { ac ? sessionStorage.setItem("hooky.ageCheck", JSON.stringify(ac)) : sessionStorage.removeItem("hooky.ageCheck"); } catch {}
+    if (!ac) saveTermsLocal(null);
+  }
+  function saveTermsLocal(t) {
+    state.terms = t;
+    try { t ? sessionStorage.setItem("hooky.terms", JSON.stringify(t)) : sessionStorage.removeItem("hooky.terms"); } catch {}
   }
 
   // ---------- boot ----------
@@ -106,6 +116,10 @@
     if (real && !store.uid) { state.me = null; return renderWelcome(); }
     state.me = await store.getMe().catch(() => null);
     if (token !== bootToken) return;
+    // Everyone has to have agreed to the current Terms: new signups did it
+    // before creating their account; existing accounts are asked here, once
+    // per version. (In the demo, only once someone has started signing up.)
+    if ((real || state.me || store.ageCheck()) && !store.termsAccepted()) return renderTerms("saved");
     if (!state.me || !state.me.name) {
       if (!real && !store.ageCheck()) return renderWelcome();
       if (!store.ageCheck()) return renderAgeIntro("account");
@@ -372,12 +386,13 @@
     }));
     $("#next").onclick = async (ev) => {
       const btn = ev.currentTarget;
-      if (mode === "signup" && real) { saveAgeCheckLocal(check); return renderCreateAccount(); }
+      if (mode === "signup" && real) { saveAgeCheckLocal(check); return renderTerms("signup"); }
       busy(btn, true);
       try {
         await store.saveAgeCheck(check);
-        // An existing profile gets the result applied; a new one is set up next.
-        if (state.me && state.me.name) boot(); else startSetup();
+        // boot() routes from here: the Terms if they still need agreeing to,
+        // then the claim for an existing profile, or setup for a new one.
+        boot();
       } catch (e) { busy(btn, false); toast(e.message); }
     };
   }
@@ -409,6 +424,55 @@
   }
 
   // =====================================================================
+  // Terms: an explicit "I agree" before the account exists
+  // =====================================================================
+  // mode "signup": before the account exists; the acceptance travels with
+  //   sign up and lands in the account's metadata.
+  // mode "saved": a signed-in account (or the demo) that hasn't agreed to the
+  //   current version yet; saved straight to the account, then back to boot().
+  function renderTerms(mode) {
+    setTabsVisible(false);
+    const row = (slug, t, s) => `<div class="prow"><div class="ico">${emo(slug, 30)}</div><div><b>${t}</b><span>${s}</span></div></div>`;
+    const check = (id, html) => `<button class="agree" id="${id}" type="button" aria-pressed="false"><span class="box"></span><span>${html}</span></button>`;
+    const link = (hash, text) => `<a href="legal.html#${hash}" target="_blank" rel="noopener">${text}</a>`;
+    const again = mode === "saved" && store.terms();
+    paint(flowHtml({
+      back: mode === "signup",
+      title: again ? "We updated the rules" : "The Hooky rules", sticker: "handshake",
+      lead: again ? "Take a look and agree to keep using Hooky." : "Hooky only works if everyone plays fair. The short version:",
+      body: `<div class="plist">
+          ${row("sunglasses", "Be real", "Your real age, your own photos. No pretending to be someone else.")}
+          ${row("hearts-face", "Be kind", "No bullying, hate or threats. No sexual content or requests, ever.")}
+          ${row("locked", "Keep it on Hooky", "Don't push anyone for their number, address, school or other apps.")}
+          ${row("video-camera", "Calls and Live", "Face on, clothes on. Hang up or tap Next any time. Nothing is recorded.")}
+          ${row("flag", "Report anything", "Reports are private. Breaking the rules gets you removed.")}
+        </div>
+        <div class="agrees">
+          ${check("agTerms", `I agree to the ${link("terms", "Terms of Service")} and ${link("privacy", "Privacy Policy")}`)}
+          ${check("agRules", `I'll follow the ${link("guidelines", "Community Guidelines")}`)}
+        </div>
+        <p class="tiny muted" style="margin:0 4px">If you're under 18, agreeing also means a parent or guardian is okay with you using Hooky.</p>`,
+      foot: `<button class="btn lime" id="agree" disabled>I agree</button>${mode === "saved" && real ? `<button class="textbtn" id="out">Log out</button>` : ""}`,
+    }));
+    const agree = $("#agree"), boxes = ["#agTerms", "#agRules"].map((s) => $(s));
+    boxes.forEach((b) => b.onclick = (e) => {
+      if (e.target.closest("a")) return; // the links open the full text
+      const on = b.getAttribute("aria-pressed") !== "true";
+      b.setAttribute("aria-pressed", String(on)); b.classList.toggle("on", on); buzz(6);
+      agree.disabled = !boxes.every((x) => x.classList.contains("on"));
+    });
+    $("#back") && ($("#back").onclick = () => renderWelcome());
+    $("#out") && ($("#out").onclick = async () => { await store.signOut(); boot(); });
+    agree.onclick = async () => {
+      const accepted = { version: S.TERMS_VERSION, at: new Date().toISOString(), guidelines: true };
+      if (mode === "signup") { saveTermsLocal(accepted); return renderCreateAccount(); }
+      agree.disabled = true; agree.textContent = "Saving…";
+      try { await store.saveTerms(accepted); buzz([20, 30, 20]); boot(); }
+      catch (e) { agree.disabled = false; agree.textContent = "I agree"; toast(e.message, 3200); }
+    };
+  }
+
+  // =====================================================================
   // Account: create, confirm email, log in, reset password
   // =====================================================================
   const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -424,6 +488,7 @@
 
   function renderCreateAccount(prefill = "") {
     if (!state.ageCheck) return renderAgeIntro("signup");
+    if (!state.terms) return renderTerms("signup");
     setTabsVisible(false);
     paint(flowHtml({
       title: "Create your account", sticker: "key",
@@ -448,7 +513,7 @@
       busy(next, true);
       try {
         const addr = email.value.trim();
-        const r = await store.signUp(addr, pw.value, state.ageCheck);
+        const r = await store.signUp(addr, pw.value, state.ageCheck, state.terms);
         if (r.needsConfirm) renderCheckEmail(addr);
         else { saveAgeCheckLocal(null); boot(); }
       } catch (e) {
@@ -781,6 +846,7 @@
     } catch (e) {
       busy(btn, false);
       const m = e.message || "";
+      if (/terms not accepted/i.test(m)) return renderTerms("saved");
       if (/age check required/i.test(m)) return renderAgeIntro("account");
       if (/does not match age check/i.test(m)) { state.step = steps.indexOf("birthday"); return renderSetup("That birthday doesn't match your age check."); }
       if (/at least 13|13 to 25/i.test(m)) { state.step = steps.indexOf("birthday"); return renderSetup(m); }

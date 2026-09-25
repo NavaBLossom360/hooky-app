@@ -31,14 +31,19 @@ with the email confirmed before the first login.
 2. **Face age check**, on the device. A short camera scan estimates age before
    any account exists. The screen explains that the camera is analyzed on the
    phone, nothing is sent to anyone, and no faceprint is created or stored.
-3. **Email and password.** The only thing kept from the scan, the estimated
+3. **Agree to the rules.** A short plain-language summary, then two
+   checkboxes (Terms and Privacy, Community Guidelines) that unlock "I agree".
+   The acceptance (version and time) is saved on the account, the database
+   refuses to create a profile without it, and when `TERMS_VERSION` in
+   `safety.js` changes everyone is asked again.
+4. **Email and password.** The only thing kept from the scan, the estimated
    age, rides along in the new account's metadata.
-4. **Confirm the email** from the link Supabase sends.
-5. **Log in.**
-6. **Set up the profile**: nickname, birthday, gender, who to meet, 1 to 4
+5. **Confirm the email** from the link Supabase sends.
+6. **Log in.**
+7. **Set up the profile**: nickname, birthday, gender, who to meet, 1 to 4
    photos, interests, region and bio, notifications. The birthday has to fit the
    face estimate, and the database checks that again when the profile is made.
-7. **Browse.**
+8. **Browse.**
 
 Accounts made before the age check existed are sent through it once at their
 next login, and stay out of everyone's deck until they pass.

@@ -87,6 +87,13 @@ language sql stable security definer set search_path = public as $$
   select raw_user_meta_data -> 'age_check' from auth.users where id = auth.uid()
 $$;
 
+-- Which version of the Terms the caller agreed to at signup (or since),
+-- recorded in their auth metadata as { terms: { version, at } }.
+create or replace function signup_terms_version() returns text
+language sql stable security definer set search_path = public as $$
+  select raw_user_meta_data -> 'terms' ->> 'version' from auth.users where id = auth.uid()
+$$;
+
 -- How far a claimed age may sit from the face estimate. Wide on purpose: face
 -- models are off by several years for teenagers, and a false rejection locks a
 -- real teenager out. Keep in step with AGE_CHECK in safety.js.
@@ -143,8 +150,12 @@ begin
     new.photo_url := null;
     new.photos := '{}';
     new.photo_status := 'none';
-    -- A profile can only be created after the on-device age check, and the
-    -- birthday has to be consistent with what the camera saw.
+    -- A profile can only be created by someone who agreed to the Terms...
+    if coalesce(case when new.id = auth.uid() then signup_terms_version() end, '') = '' then
+      raise exception 'terms not accepted';
+    end if;
+    -- ...and after the on-device age check, with a birthday consistent with
+    -- what the camera saw.
     ac := case when new.id = auth.uid() then signup_age_check() end;
     begin
       est := (ac ->> 'estimate')::numeric;

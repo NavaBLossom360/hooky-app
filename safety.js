@@ -5,6 +5,10 @@
   const MIN_AGE = 13;
   const MAX_AGE = 25;
   const MAX_PHOTOS = 4;
+  // The version of Terms / Privacy / Guidelines people agree to. Change it
+  // whenever legal.html changes in a way people should re-agree to: everyone
+  // is asked again at their next visit.
+  const TERMS_VERSION = "2026-09-24";
   const WINDOW = 2; // years either side
 
   // Who a person of this age is allowed to see.
@@ -142,7 +146,7 @@
   }
 
   window.HookySafety = {
-    MIN_AGE, MAX_AGE, MAX_PHOTOS, GENDERS, TIERS, PERIODS, REPORT_REASONS, AGE_CHECK,
+    MIN_AGE, MAX_AGE, MAX_PHOTOS, TERMS_VERSION, GENDERS, TIERS, PERIODS, REPORT_REASONS, AGE_CHECK,
     ageFromBirthdate, visibleRange, ageBand, canSee, isMinor, checkMessage,
     priceFor, roomsAllowed, ageFitsEstimate, estimateAllowsSignup, estimateLabel,
   };

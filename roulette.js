@@ -6,25 +6,31 @@
 //           realtime channel, with a small chat alongside
 //   guard   an on-device nudity check on the OTHER person's video
 //
-// The guard is nsfwjs 4.4 (MIT) with its MobileNetV2Mid model, vendored in
-// vendor/nsfwjs. It looks at a frame about once a second. The other person's
-// video starts blurred and only shows once a frame has been checked (a
-// fraction of a second). A borderline frame blurs it again until a clean one
-// arrives. Only a sustained, unmistakable hit ends the chat. Frames never
-// leave the phone.
+// The guard is the same MobileNetV4 nudity model the server uses to check
+// profile photos (vendor/nsfw, Apache 2.0), run by onnxruntime-web 1.14
+// (vendor/onnxruntime, MIT). It looks at a frame about once a second. The
+// other person's video starts blurred and only shows once a frame has been
+// checked (a fraction of a second). A borderline frame blurs it again until a
+// clean one arrives. Only a sustained, unmistakable hit ends the chat. Frames
+// never leave the phone.
 (function () {
   // ICE servers (STUN, plus TURN when configured) come from store.iceServers(),
   // which gets short-lived Cloudflare TURN credentials from the
   // turn-credentials Edge Function. A config.js `iceServers` list overrides it.
   const CONNECT_TIMEOUT_MS = 15000;
 
-  // Tuned on webcam-style frames of clothed people. The smaller MobileNetV2
-  // model scored a plain strapless-top selfie 0.86 "porn", so it was dropped;
-  // this model scores it 0.14, and across 28 such frames never went past
-  // 0.77. "Sexy" fires on ordinary outfits, so it is ignored. Blurring is
-  // cheap and temporary; ending a chat and reporting someone is not, so that
-  // needs about three seconds of near-certain explicit video.
+  // The score is the model's porn + hentai probability, 0 to 1. Its "sexy"
+  // class is ignored: it scored an ordinary group photo in party dresses 1.00.
+  // History: nsfwjs MobileNetV2 scored a plain strapless-top selfie 0.86 and
+  // was dropped; nsfwjs MobileNetV2Mid reached 0.77 on clothed webcam frames;
+  // this model scores those frames 0.00 to 0.02. The thresholds were set for
+  // the noisier model and kept: blurring is cheap and temporary, but ending a
+  // chat and reporting someone needs about three seconds of near-certain
+  // explicit video.
   const GUARD = { BLUR: 0.75, CLEAR: 0.6, TRIP: 0.92, TRIP_STREAK: 3, EVERY_MS: 900 };
+  const MODEL_URL = "vendor/nsfw/mobilenetv4-nsfw.onnx";
+  const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225]; // ImageNet
+  const S = 224;
 
   // ---------- media ----------
   async function openMedia() {
@@ -53,18 +59,31 @@
     });
   }
   // Live refuses to start without the guard: if it can't load, nobody goes live.
+  // Resolves to { score(canvas) -> porn + hentai probability }.
   function loadGuard() {
     if (guardLoading) return guardLoading;
     guardLoading = (async () => {
-      if (!window.nsfwjs) await loadScript("vendor/nsfwjs/nsfwjs.min.js");
-      if (!window.model) await loadScript("vendor/nsfwjs/model.min.js");
-      if (!window.group1_shard1of2) await loadScript("vendor/nsfwjs/group1-shard1of2.min.js");
-      if (!window.group1_shard2of2) await loadScript("vendor/nsfwjs/group1-shard2of2.min.js");
-      const m = await window.nsfwjs.load("MobileNetV2Mid");
+      if (!window.ort) await loadScript("vendor/onnxruntime/ort.wasm.min.js");
+      const ort = window.ort;
+      ort.env.wasm.numThreads = 1; // threads need cross-origin isolation, which Pages can't set
+      ort.env.wasm.wasmPaths = "vendor/onnxruntime/";
+      const session = await ort.InferenceSession.create(MODEL_URL, { executionProviders: ["wasm"] });
+      const input = new Float32Array(3 * S * S);
+      const score = async (canvas) => {
+        const d = canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, S, S).data;
+        for (let i = 0; i < S * S; i++) {
+          for (let c = 0; c < 3; c++) input[c * S * S + i] = (d[i * 4 + c] / 255 - MEAN[c]) / STD[c];
+        }
+        // One image, shaped [3, 224, 224]: this model takes no batch dimension.
+        const out = await session.run({ [session.inputNames[0]]: new ort.Tensor("float32", input, [3, S, S]) });
+        const l = Array.from(out[session.outputNames[0]].data);
+        const m = Math.max(...l), e = l.map((v) => Math.exp(v - m)), sum = e.reduce((a, b) => a + b, 0);
+        return (e[1] + e[3]) / sum; // labels: drawings, hentai, neutral, porn, sexy
+      };
       // Warm up so the first real check is fast.
-      const c = document.createElement("canvas"); c.width = c.height = 224;
-      await m.classify(c);
-      return m;
+      const c = document.createElement("canvas"); c.width = c.height = S;
+      await score(c);
+      return { score };
     })();
     guardLoading.catch(() => { guardLoading = null; });
     return guardLoading;
@@ -73,7 +92,7 @@
   // Watches a <video>. Callbacks: onState("checking" | "clear" | "hidden"),
   // onTrip() once, when the video is clearly explicit. Returns stop().
   function watch(video, model, { onState, onTrip }) {
-    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 224;
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = S;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     let stopped = false, hidden = true, streak = 0, busy = false;
     onState("checking");
@@ -82,11 +101,9 @@
       if (video.readyState < 2 || !video.videoWidth) return;
       busy = true;
       try {
-        ctx.drawImage(video, 0, 0, 224, 224);
-        const preds = await model.classify(canvas);
+        ctx.drawImage(video, 0, 0, S, S);
+        const score = await model.score(canvas);
         if (stopped) return;
-        const p = Object.fromEntries(preds.map((x) => [x.className, x.probability]));
-        const score = (p.Porn || 0) + (p.Hentai || 0);
         streak = score >= GUARD.TRIP ? streak + 1 : 0;
         if (streak >= GUARD.TRIP_STREAK) { stopped = true; onState("hidden"); onTrip(score); return; }
         if (score >= GUARD.BLUR) { if (!hidden) { hidden = true; onState("hidden"); } }

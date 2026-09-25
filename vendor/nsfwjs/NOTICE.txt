@@ -1,9 +1,0 @@
-nsfwjs 4.4.0 by Infinite Red (https://github.com/infinitered/nsfwjs), MIT
-licensed, bundling TensorFlow.js (Apache 2.0). The model is its
-MobileNetV2Mid classifier (files model.min.js and group1-shard*.min.js).
-
-Hooky's Live screen runs it in the browser on the OTHER person's video to
-blur, and in clear cases end, explicit video. Frames never leave the phone.
-
-The smaller MobileNetV2 model was tried first and dropped: it scored an
-ordinary strapless-top selfie 0.86 "porn". This one scored it 0.14.

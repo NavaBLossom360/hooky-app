@@ -1,0 +1,4 @@
+# Model weights and WebAssembly must never get line-ending conversion.
+*.wasm binary
+*.onnx binary
+vendor/face-api/models/* binary

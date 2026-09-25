@@ -169,7 +169,7 @@ What keeps it from being Omegle:
   preference, never someone blocked either way, no instant re-pairing with
   the same person, and only age-checked profiles with a real photo.
 - **An automatic check on your phone watches the other person's video**
-  (nsfwjs MobileNetV2Mid, in `roulette.js`). Their video starts blurred and
+  (the same MobileNetV4 model that checks profile photos, in `roulette.js`). Their video starts blurred and
   shows once a frame is checked, which usually takes under a second.
   Borderline frames blur it again. About three seconds of near-certain
   explicit video ends the chat, blocks them and files a report, which waits

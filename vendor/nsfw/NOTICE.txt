@@ -1,0 +1,9 @@
+mobilenetv4-nsfw.onnx is taufiqdp/mobilenetv4_conv_small.e2400_r224_in1k_nsfw_classifier
+(https://huggingface.co/taufiqdp/mobilenetv4_conv_small.e2400_r224_in1k_nsfw_classifier),
+Apache 2.0. Input: one image as [3, 224, 224], ImageNet mean/std. Output
+classes: drawings, hentai, neutral, porn, sexy.
+
+Hooky uses it twice: the photo-check Edge Function scores every uploaded
+profile photo, and Live (roulette.js) scores the other person's video on the
+viewer's own phone. Run in the browser by onnxruntime-web 1.14 (MIT,
+vendor/onnxruntime).

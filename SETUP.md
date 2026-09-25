@@ -148,6 +148,13 @@ preflight. With only the first and last, browsers silently dropped the real
 request, which is why photo uploads failed from phones while working from the
 command line.
 
+The nudity classifier is a 10 MB MobileNetV4 model (Apache 2.0). An 83 MB ViT
+was used at first, but it exceeded the Edge runtime's memory limit on every
+upload (and a pure-JavaScript model ran past its 2 second CPU limit); this one
+loads in under a second and checks a photo in about 50 ms, measured inside
+the runtime. Only its porn and hentai classes count: its "sexy" class scored
+an ordinary group photo in party dresses 1.00.
+
 This is a nudity classifier, **not** CSAM detection. A real teen app also needs
 hash-matching against known material and a human review queue. Both need
 accounts and legal agreements, so neither is wired up.

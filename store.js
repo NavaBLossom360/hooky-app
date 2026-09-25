@@ -448,7 +448,7 @@
       const { data, error } = await this.sb.functions.invoke("photo-check", { body });
       if (error) {
         let detail = "";
-        try { detail = (await error.context.json()).error || ""; } catch {}
+        try { const j = await error.context.json(); detail = j.error || (j.code === "WORKER_RESOURCE_LIMIT" ? "The photo checker is overloaded right now. Try again in a minute." : j.message) || ""; } catch {}
         throw new Error(detail || error.message);
       }
       if (data.photos) await this.signPaths(data.photos);

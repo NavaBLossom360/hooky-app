@@ -13,8 +13,10 @@
 // Every response carries the updated list: { ok, photos: [paths] }.
 //
 // A photo is accepted only if BOTH hold:
-//   1. A nudity classifier (ViT, quantized, ~83MB) scores it below the
-//      threshold. Anything above is rejected and never stored.
+//   1. A nudity classifier (MobileNetV4, ~10MB, Apache 2.0) scores its porn
+//      + hentai classes below the threshold. Anything above is rejected and
+//      never stored. The earlier 83MB ViT blew the Edge runtime's memory
+//      limit on every upload, so it was replaced; this one runs in ~50ms.
 //   2. A face is detected (UltraFace, ~1.3MB). Profile photos are meant to be
 //      of you, which also stops random images and screenshots.
 //
@@ -32,7 +34,7 @@ const ort: any = (ortModule as any)?.env ? (ortModule as any) : ((ortModule as a
 import jpeg from "https://esm.sh/jpeg-js@0.4.4";
 
 const NSFW_MODEL_URL = Deno.env.get("NSFW_MODEL_URL") ??
-  "https://huggingface.co/onnx-community/nsfw_image_detection-ONNX/resolve/main/onnx/model_quantized.onnx";
+  "https://huggingface.co/taufiqdp/mobilenetv4_conv_small.e2400_r224_in1k_nsfw_classifier/resolve/main/mobilenetv4_conv_small.e2400_r224_in1k_nsfw_classifier.onnx";
 const FACE_MODEL_URL = Deno.env.get("FACE_MODEL_URL") ??
   "https://huggingface.co/onnxmodelzoo/version-RFB-320/resolve/main/version-RFB-320.onnx";
 // Deliberately below 0.5. This is a teen app, so an over-eager reject costs a
@@ -111,24 +113,25 @@ function loadSession(url: string): Promise<any> {
 function getNsfw() { if (!nsfwSession) nsfwSession = loadSession(NSFW_MODEL_URL).catch((e) => { nsfwSession = null; throw e; }); return nsfwSession; }
 function getFace() { if (!faceSession) faceSession = loadSession(FACE_MODEL_URL).catch((e) => { faceSession = null; throw e; }); return faceSession; }
 
-// ViT: 224x224, scaled to 0..1 then normalised with mean and std of 0.5.
-// Labels are index 0 "normal", index 1 "nsfw".
+// MobileNetV4: one 224x224 image as [3, 224, 224] (no batch dimension),
+// ImageNet mean/std. Labels: drawings, hentai, neutral, porn, sexy. The score
+// is porn + hentai; "sexy" is ignored because it fires on ordinary party and
+// beach photos (a group shot in club dresses scored 1.00).
+const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
 async function nsfwScore(img: Rgba): Promise<number> {
   const S = 224;
   const rgb = sample(img, 0, 0, img.width, img.height, S, S);
   const input = new Float32Array(3 * S * S);
   for (let i = 0; i < S * S; i++) {
-    input[i] = (rgb[i * 3] / 255 - 0.5) / 0.5;
-    input[S * S + i] = (rgb[i * 3 + 1] / 255 - 0.5) / 0.5;
-    input[2 * S * S + i] = (rgb[i * 3 + 2] / 255 - 0.5) / 0.5;
+    for (let c = 0; c < 3; c++) input[c * S * S + i] = (rgb[i * 3 + c] / 255 - MEAN[c]) / STD[c];
   }
   const session = await getNsfw();
-  const out = await session.run({ [session.inputNames[0]]: new ort.Tensor("float32", input, [1, 3, S, S]) });
+  const out = await session.run({ [session.inputNames[0]]: new ort.Tensor("float32", input, [3, S, S]) });
   const logits = Array.from(out[session.outputNames[0]].data as Float32Array);
   const m = Math.max(...logits);
   const exp = logits.map((v) => Math.exp(v - m));
   const sum = exp.reduce((a, b) => a + b, 0);
-  return exp[1] / sum;
+  return (exp[1] + exp[3]) / sum;
 }
 
 // UltraFace wants 320x240. Portrait photos are letterboxed into it rather

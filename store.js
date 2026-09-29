@@ -52,7 +52,12 @@
     let msg = m;
     if (/invalid login credentials/i.test(m)) msg = "That email and password don't match.";
     else if (/email not confirmed/i.test(m)) msg = "Confirm your email first. Check your inbox for the link.";
-    else if (/rate limit|too many|seconds/i.test(m)) msg = "Too many emails for now. Wait a few minutes and try again.";
+    // over_email_send_rate_limit is the whole project's email budget (tiny on
+    // Supabase's built-in sender), not anything this person did.
+    else if (err && err.code === "over_email_send_rate_limit" || /email rate limit/i.test(m)) msg = "Hooky can't send more emails right now. That's on us, not you: try again in a little while.";
+    else if (/after (\d+) seconds?/i.test(m)) msg = `Wait ${m.match(/after (\d+) seconds?/i)[1]} seconds before asking for another email.`;
+    else if (/rate limit|too many/i.test(m)) msg = "Too many tries. Wait a few minutes and try again.";
+    else if (/error sending .*email/i.test(m)) msg = "We couldn't send the email. Check the address, or try again later.";
     else if (/password should be at least|weak password/i.test(m)) msg = "Pick a longer password: at least 8 characters.";
     else if (/already registered|already been registered/i.test(m)) msg = "There's already an account with that email. Log in instead.";
     else if (/invalid email|unable to validate email/i.test(m)) msg = "That email address doesn't look right.";

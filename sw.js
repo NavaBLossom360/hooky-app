@@ -1,7 +1,7 @@
 // Hooky service worker: makes the app installable, lets the shell load offline,
 // and receives push notifications for new catches and messages.
 // Network first, cache fallback, so updates show up right away when online.
-const CACHE = "hooky-v14";
+const CACHE = "hooky-v15";
 // The age check (vendor/face-api, about 2 MB) and the Live safety check
 // (vendor/onnxruntime + vendor/nsfw, about 20 MB) are not precached; they are
 // cached the first time someone uses them.
@@ -18,7 +18,9 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request).then((res) => { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return res; })
+    // no-cache: always ask the server (a cheap 304 when nothing changed), so
+    // the browser's own 10 minute HTTP cache can't serve an old app.js.
+    fetch(e.request, { cache: "no-cache" }).then((res) => { if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); } return res; })
       .catch(() => caches.match(e.request).then((r) => r || caches.match("index.html")))
   );
 });

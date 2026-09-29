@@ -80,9 +80,12 @@ accounts, and the demo's fake people) gets a card built from its interests:
 an emoji large in the middle with interest stickers floating behind it.
 
 Everyone picks a **profile style** from the Style button on the Me tab (or
-Edit profile): twelve soft multi-color backgrounds, each with three stickers
-that float on your profile. Others see it on your avatar, photo-less cards and
-call screens. People who haven't picked get a stable default from the same set.
+Edit profile): fourteen soft multi-color backgrounds, each with three stickers
+that float on your profile. Six are free, four more come with Hooky+, and Max
+unlocks all of them; the database enforces this, and a paid style shows as the
+default again once the plan ends. Others see your style on your avatar,
+photo-less cards and call screens. People who haven't picked get a stable
+free default.
 Add `?demo` to the URL to run the demo even where a backend is configured.
 
 The emoji are Microsoft's Fluent Emoji (MIT), bundled so they look identical
@@ -114,6 +117,7 @@ Visibility is also mutual on gender: you each have to be in the other person's
 | See who hooked you | blurred | yes | yes |
 | Undo a pass | no | yes | yes |
 | Private rooms | none | 1 | 5 |
+| Profile styles | 6 | 10 | all 14 |
 | Voice and video calls | yes | yes | yes |
 | Report, block, safety tips | yes | yes | yes |
 

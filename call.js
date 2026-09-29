@@ -8,6 +8,22 @@
   const E = window.HookyEmoji;
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+  // Browsers may refuse to start sound that nobody tapped for (Edge on a
+  // computer especially, when the call was answered on the other side). If
+  // play() is refused, show one big button: the tap is what unlocks sound.
+  function playOrAsk(el, container) {
+    const p = el.play();
+    if (!p || !p.catch) return;
+    p.catch((err) => {
+      if (!err || err.name !== "NotAllowedError" || container.querySelector(".tap-sound")) return;
+      const b = document.createElement("button");
+      b.className = "tap-sound btn lime";
+      b.innerHTML = `${E.emo("megaphone", 24)} Tap to hear them`;
+      b.onclick = () => { container.querySelectorAll("audio, video").forEach((m) => m.play().catch(() => {})); b.remove(); };
+      container.appendChild(b);
+    });
+  }
+
   // mode is "video" or "voice". A voice call asks for no camera at all, which
   // is the point: some people want to talk without being on camera.
   function start({ store, me, other, matchId, isCaller, mode, onEnd, onReport }) {
@@ -109,9 +125,13 @@
       stream && stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       const pendingIce = [];
       let offered = false, repliedHello = false;
+      // ontrack fires once per track. Audio always plays through the <audio>
+      // element; the <video> only shows once there is a video track, so a
+      // mic-only caller leaves their photo up instead of a black screen.
       pc.ontrack = (ev) => {
-        if (voice) { $("#remoteAudio").srcObject = ev.streams[0]; }
-        else { remoteVideo.srcObject = ev.streams[0]; remoteVideo.classList.remove("hidden"); }
+        const audioEl = $("#remoteAudio");
+        if (ev.track.kind === "audio") { audioEl.srcObject = new MediaStream([ev.track]); playOrAsk(audioEl, root); }
+        else if (!voice) { remoteVideo.muted = true; remoteVideo.srcObject = new MediaStream([ev.track]); remoteVideo.classList.remove("hidden"); playOrAsk(remoteVideo, root); }
       };
       pc.onicecandidate = (ev) => { if (ev.candidate) ch.send("ice", ev.candidate); };
       pc.onconnectionstatechange = () => {
@@ -150,5 +170,5 @@
     return { end };
   }
 
-  window.HookyCall = { start };
+  window.HookyCall = { start, playOrAsk };
 })();

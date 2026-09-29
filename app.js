@@ -1355,7 +1355,7 @@
       onRemote: (ms) => {
         if (L.sid !== mine) return;
         const rv = $("#rv"); if (!rv) return;
-        if (ms) { rv.srcObject = ms; setCover(null); startLiveGuard(mine); }
+        if (ms) { rv.srcObject = ms; setCover(null); startLiveGuard(mine); window.HookyCall.playOrAsk(rv, $("#stage")); }
         else setCover("demo", partner); // demo mode: no real video on the other end
       },
       onConnected: () => { if (L.sid === mine) buzz([20, 30, 20]); },

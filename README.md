@@ -79,6 +79,12 @@ show which one is up, Yubo-style. The rare profile with no photo (older
 accounts, and the demo's fake people) gets a card built from its interests:
 an emoji large in the middle with interest stickers floating behind it.
 
+Everyone picks a **profile style** from the Style button on the Me tab (or
+Edit profile): twelve soft multi-color backgrounds, each with three stickers
+that float on your profile. Others see it on your avatar, photo-less cards and
+call screens. People who haven't picked get a stable default from the same set.
+Add `?demo` to the URL to run the demo even where a backend is configured.
+
 The emoji are Microsoft's Fluent Emoji (MIT), bundled so they look identical
 on every phone and never load from a third party.
 

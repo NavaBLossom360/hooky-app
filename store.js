@@ -8,13 +8,9 @@
   const FALLBACK_ICE = [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] }];
   const DAY = 86400000;
 
-  const GRADIENTS = [
-    "linear-gradient(135deg,#ff4f8b,#8b5cf6)", "linear-gradient(135deg,#c8ff4f,#22c55e)",
-    "linear-gradient(135deg,#38bdf8,#6366f1)", "linear-gradient(135deg,#f59e0b,#ef4444)",
-    "linear-gradient(135deg,#a855f7,#ec4899)", "linear-gradient(135deg,#14b8a6,#3b82f6)",
-  ];
+  // Backgrounds come from the person's profile style (emoji.js THEMES).
   function hash(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
-  function gradientFor(id) { return GRADIENTS[hash(id) % GRADIENTS.length]; }
+  function gradientFor(id, theme) { return window.HookyEmoji.themeFor({ id, theme }).bg; }
 
   // Seeded demo users. Real photos are never bundled; avatars are emoji.
   const P = (id, name, age, emoji, region, bio, tags, likedYou) => ({ id, name, age, emoji, region, bio, tags, likedYou: !!likedYou });
@@ -67,7 +63,8 @@
 
   function withBracket(u) {
     const b = S.ageBand(u.age);
-    return Object.assign({}, u, { band: b ? b.label : null, minor: S.isMinor(u.age), gradient: gradientFor(u.id) });
+    const t = window.HookyEmoji.themeFor(u);
+    return Object.assign({}, u, { band: b ? b.label : null, minor: S.isMinor(u.age), gradient: t.bg, style: t });
   }
 
   // ---------------- Local demo store ----------------
@@ -120,6 +117,7 @@
       if (!S.ageFitsEstimate(S.ageFromBirthdate(me.birthdate), ac.estimate)) throw new Error("birthday does not match age check");
       me.verification = "estimated"; me.verificationProvider = "on-device"; this.save();
     }
+    async saveTheme(id) { if (!this.db.me) return; this.db.me.theme = id; this.save(); return this.getMe(); }
     async setPremium(on, tier) { this.db.premium = !!on; this.db.tier = on ? (tier || "plus") : null; this.save(); }
     // ----- photos (demo stand-in for the photo-check function) -----
     // Up to four, stored as data URLs. The ref IS the URL here; on the real
@@ -426,7 +424,7 @@
       const paths = (data.photos || []).slice();
       await this.signPaths(paths);
       const photos = paths.map((p) => ({ ref: p, url: this.url(p) })).filter((x) => x.url);
-      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photos, photo: photos.length ? photos[0].url : null, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), tier: data.premium_tier, photoStatus: data.photo_status, verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider, email: this.session.user.email });
+      return withBracket({ id: data.id, name: data.display_name, age: S.ageFromBirthdate(data.birthdate), birthdate: data.birthdate, emoji: data.emoji, region: data.region, bio: data.bio, tags: data.interests || [], photos, photo: photos.length ? photos[0].url : null, gender: data.gender, showMe: data.show_me || S.GENDERS.map((g) => g.id), premium: data.premium_until && new Date(data.premium_until) > new Date(), tier: data.premium_tier, theme: data.theme, photoStatus: data.photo_status, verification: data.verification && data.verification !== "none" ? data.verification : null, verificationProvider: data.verification_provider, email: this.session.user.email });
     }
     async saveMe(p) {
       // photo_url is deliberately absent: only photo-check may write it, so a
@@ -435,6 +433,12 @@
       if (p.gender) row.gender = p.gender;
       if (p.showMe) row.show_me = p.showMe;
       const { error } = await this.sb.from("profiles").upsert(row);
+      if (error) throw error;
+      return this.getMe();
+    }
+    // Profile style: cosmetic, saved on its own the moment it's picked.
+    async saveTheme(id) {
+      const { error } = await this.sb.from("profiles").update({ theme: id }).eq("id", this.uid);
       if (error) throw error;
       return this.getMe();
     }
@@ -482,9 +486,19 @@
       await this.signPaths(data.flatMap((r) => r.photos || []));
       return Object.fromEntries(data.map((r) => [r.id, (r.photos || []).map((p) => this.url(p)).filter(Boolean)]));
     }
-    async signRows(rows) { await this.signPaths((rows || []).map((r) => r.photo_url)); return rows || []; }
+    // Signs the photos in a list of people and picks up their profile styles
+    // (one small call for the whole list; the style just falls back to a
+    // default if it fails).
+    async signRows(rows) {
+      rows = rows || [];
+      this.themes = this.themes || new Map();
+      const ids = rows.map((r) => r.id || r.other_id).filter((id) => id && !this.themes.has(id));
+      const themes = ids.length ? this.sb.rpc("themes_of", { ids }).then(({ data }) => (data || []).forEach((t) => this.themes.set(t.id, t.theme))).catch(() => {}) : null;
+      await Promise.all([this.signPaths(rows.map((r) => r.photo_url)), themes]);
+      return rows;
+    }
 
-    map(r) { return withBracket({ id: r.id, name: r.display_name, age: r.age, emoji: r.emoji, region: r.region, bio: r.bio, tags: r.interests || [], photo: this.url(r.photo_url), gender: r.gender, online: this.online.has(r.id) }); }
+    map(r) { return withBracket({ id: r.id, theme: this.themes && this.themes.get(r.id), name: r.display_name, age: r.age, emoji: r.emoji, region: r.region, bio: r.bio, tags: r.interests || [], photo: this.url(r.photo_url), gender: r.gender, online: this.online.has(r.id) }); }
     async candidates() { const { data, error } = await this.sb.rpc("discover_candidates", { lim: 20 }); if (error) throw error; return (await this.signRows(data)).map((r) => this.map(r)).sort((a, b) => Number(b.online) - Number(a.online)); }
     async likesRemaining() { const { data } = await this.sb.rpc("likes_remaining"); return data === -1 ? Infinity : data; }
     async swipe(id, dir) {

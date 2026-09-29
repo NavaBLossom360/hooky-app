@@ -57,5 +57,33 @@
     return `<${el} class="tag${on}" style="--tc:${tagColor(t)}"${data}>${emo(tagSlug(t), opts.size || 18)}${esc(t)}</${el}>`;
   }
 
-  window.HookyEmoji = { emo, char, tag, tagSlug, tagColor, AVATARS, INTERESTS, BY_CHAR, hash };
+  // Profile styles: a soft multi-color background (three glows over a base,
+  // instead of a flat two-color fade) and three stickers that float on your
+  // profile. People pick one on the Me tab; everyone else sees it on cards
+  // without photos, avatars, and call screens. Ids are stored in
+  // profiles.theme, so keep them stable (the database allows ^[a-z]{2,16}$).
+  const mesh = (base, a, b, c) =>
+    `radial-gradient(110% 80% at 0% 0%, ${a} 0%, transparent 60%), radial-gradient(90% 90% at 100% 100%, ${b} 0%, transparent 62%), radial-gradient(70% 70% at 100% 0%, ${c} 0%, transparent 60%), ${base}`;
+  const THEMES = [
+    { id: "sunset", name: "Sunset", bg: mesh("#ff5e62", "#ffb347", "#ff2e97", "#7b2ff7"), stickers: ["sun", "sparkles", "heart"] },
+    { id: "ocean", name: "Ocean", bg: mesh("#0369a1", "#22d3ee", "#1e3a8a", "#38bdf8"), stickers: ["dolphin", "tropical-fish", "wave"] },
+    { id: "galaxy", name: "Galaxy", bg: mesh("#1e1b4b", "#7c3aed", "#ec4899", "#312e81"), stickers: ["rocket", "star", "moon"] },
+    { id: "candy", name: "Candy", bg: mesh("#f9a8d4", "#c4b5fd", "#fb7185", "#fde68a"), stickers: ["lollipop", "cupcake", "strawberry"] },
+    { id: "matcha", name: "Matcha", bg: mesh("#15803d", "#a3e635", "#065f46", "#4ade80"), stickers: ["herb", "frog", "blossom"] },
+    { id: "arcade", name: "Arcade", bg: mesh("#150b2e", "#ff00d4", "#00e5ff", "#6d28d9"), stickers: ["video-game", "headphone", "zap"] },
+    { id: "peach", name: "Peach", bg: mesh("#fb923c", "#fed7aa", "#f472b6", "#fdba74"), stickers: ["teddy", "cake", "sparkling-heart"] },
+    { id: "lava", name: "Lava", bg: mesh("#7f1d1d", "#f97316", "#dc2626", "#facc15"), stickers: ["fire", "hundred", "dizzy"] },
+    { id: "mint", name: "Mint", bg: mesh("#0d9488", "#99f6e4", "#0f766e", "#5eead4"), stickers: ["bubble-tea", "panda", "cat"] },
+    { id: "lime", name: "Hooky lime", bg: mesh("#14532d", "#c8ff4f", "#0f172a", "#22c55e"), stickers: ["fishing-pole", "sparkles", "thumbs-up"] },
+    { id: "rainbow", name: "Rainbow", bg: `radial-gradient(90% 70% at 50% 0%, rgba(255,255,255,0.35), transparent 60%), linear-gradient(135deg, #ff5f6d, #ffc371 25%, #c8ff4f 45%, #38bdf8 70%, #a855f7)`, stickers: ["rainbow", "unicorn", "balloon"] },
+    { id: "midnight", name: "Midnight", bg: mesh("#020617", "#1d4ed8", "#0f172a", "#6366f1"), stickers: ["moon", "sleeping", "star"] },
+  ];
+  const THEME_BY_ID = Object.fromEntries(THEMES.map((t) => [t.id, t]));
+  // The chosen style, or a stable pick from the set for people who haven't
+  // chosen one, so nobody is left on a plain fade.
+  function themeFor(u) {
+    return (u && THEME_BY_ID[u.theme]) || THEMES[hash((u && (u.id || u.name)) || "me") % THEMES.length];
+  }
+
+  window.HookyEmoji = { emo, char, tag, tagSlug, tagColor, AVATARS, INTERESTS, BY_CHAR, hash, THEMES, themeFor };
 })();

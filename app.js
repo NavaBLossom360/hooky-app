@@ -24,12 +24,15 @@
     spin: svg(`<path d="M12 3a9 9 0 1 0 9 9"/>`, 3),
   };
 
-  const store = window.HOOKY_CONFIG && window.HOOKY_CONFIG.supabaseUrl && !/YOUR-PROJECT/.test(window.HOOKY_CONFIG.supabaseUrl)
+  // ?demo runs the fake-data demo even where a backend is configured, for
+  // trying things out or showing the app without an account.
+  const forceDemo = /[?&]demo\b/.test(location.search);
+  const store = !forceDemo && window.HOOKY_CONFIG && window.HOOKY_CONFIG.supabaseUrl && !/YOUR-PROJECT/.test(window.HOOKY_CONFIG.supabaseUrl)
     ? new SupabaseStore(window.HOOKY_CONFIG) : new LocalStore();
   const real = store.kind === "supabase";
 
   const SUPPORT_EMAIL = "support@example.com"; // change before shipping
-  const APP_VERSION = "2026.09.29-5"; // shown on the Me tab; bump with sw.js CACHE
+  const APP_VERSION = "2026.09.29-6"; // shown on the Me tab; bump with sw.js CACHE
   const state = { me: null, tab: "discover", draft: {}, step: 0, chatId: null, onlineOnly: false, inCall: false, ageCheck: null, leave: null };
   try { state.ageCheck = JSON.parse(sessionStorage.getItem("hooky.ageCheck")) || null; } catch {}
   try { state.terms = JSON.parse(sessionStorage.getItem("hooky.terms")) || null; } catch {}
@@ -1528,6 +1531,8 @@
     paint(`${appbar(`<h1 class="display title lime">Me</h1><div class="grow"></div>${plusChip(me)}`)}
       <div class="me-hero">
         <div class="bg" style="background:${me.gradient}"></div>
+        <div class="me-stickers" aria-hidden="true">${me.style.stickers.map((s, i) => emo(s, [46, 38, 42][i], `ms${i}`)).join("")}</div>
+        <button class="style-chip" id="styleBtn">${emo("palette", 20)} Style</button>
         ${avatarHtml(me, "xl")}
         <div class="display">${esc(me.name)}, ${me.age}</div>
         <div class="pills">${checked}<span class="pill">${emo("pin", 16)} ${esc(me.region || "Somewhere")}</span>${me.premium ? `<span class="pill plus">${emo("crown", 16)} ${me.tier === "max" ? "Hooky Max" : "Hooky+"}</span>` : ""}</div>
@@ -1561,6 +1566,7 @@
       </div>
       <div class="foot-note">Hooky ${store.kind === "local" ? "demo" : ""} · Friends, not dating · 13 to 25<br>Version ${APP_VERSION}<br>3D emoji by Microsoft Fluent Emoji (MIT)</div>`);
     $("#edit").onclick = () => renderSettings();
+    $("#styleBtn").onclick = () => openStylePicker(renderProfile);
     $("#addPics") && ($("#addPics").onclick = () => renderSettings());
     $("#gShow").onclick = $("#gMe").onclick = () => renderSettings();
     $("#plusChip").onclick = () => renderPlus();
@@ -1631,6 +1637,32 @@
   // ---------- edit profile ----------
   // Everything editable lives here. Birthdate is deliberately absent: it is
   // write-once, in the client and in the database.
+  // Profile style picker. Saves the moment you tap one (it's only looks), and
+  // previews it live at the top of the sheet.
+  function openStylePicker(after) {
+    const me = state.me;
+    let cur = me.style.id;
+    const preview = (t) => `<div class="style-preview" style="background:${t.bg}">${t.stickers.map((s, i) => emo(s, [40, 32, 36][i], `ps${i}`)).join("")}${avatarHtml(Object.assign({}, me, { gradient: t.bg }), "lg")}<b>${esc(me.name || "You")}</b></div>`;
+    modal(`<div id="spv">${preview(me.style)}</div>
+      <h2 class="center" style="margin-top:14px">Your profile style</h2>
+      <p class="muted small center">Shows on your profile, your cards and your calls.</p>
+      <div class="style-grid" id="sgrid">${E.THEMES.map((t) => `<button class="style-tile ${t.id === cur ? "on" : ""}" data-theme="${t.id}" style="background:${t.bg}">${emo(t.stickers[0], 34)}<span>${esc(t.name)}</span></button>`).join("")}</div>
+      <button class="btn lime" id="sdone">Done</button>`, () => {
+      $("#sdone").onclick = closeModal;
+      $("#sgrid").onclick = async (e) => {
+        const b = e.target.closest("[data-theme]"); if (!b || b.dataset.theme === cur) return;
+        buzz(8);
+        const t = E.THEMES.find((x) => x.id === b.dataset.theme);
+        cur = t.id;
+        document.querySelectorAll(".style-tile").forEach((x) => x.classList.toggle("on", x === b));
+        $("#spv").innerHTML = preview(t);
+        // Redraw the screen behind the sheet too, so the change shows live.
+        try { state.me = await store.saveTheme(t.id); if (after) after(); else paintMeTab(); }
+        catch (err) { toast("Couldn't save that style. Try again."); }
+      };
+    });
+  }
+
   async function renderSettings() {
     const me = state.me = await store.getMe();
     const d = Object.assign({ showMe: ALL_GENDERS.slice() }, me);
@@ -1649,6 +1681,7 @@
           <div class="field"><label>I'm a</label><div class="tags" id="gender">${GENDERS.map((x) => `<button class="tag ${d.gender === x.id ? "on" : ""}" style="--tc:var(--lime)" data-g="${x.id}">${emo(x.emoji, 20)}${esc(x.label)}</button>`).join("")}</div></div>
           <div class="field"><label>Who I want to meet</label><div class="tags" id="showMe">${GENDERS.map((x) => `<button class="tag ${(d.showMe || []).includes(x.id) ? "on" : ""}" style="--tc:var(--lime)" data-s="${x.id}">${emo(x.emoji, 20)}${esc(x.plural)}</button>`).join("")}</div>
             <p class="tiny muted" style="margin:4px 4px 0">Matching is mutual: you both have to be in each other's "show me".</p></div>
+          <div class="group" style="margin:0">${settingRow({ id: "styleRow", slug: "palette", label: "Profile style", val: esc(me.style.name) })}</div>
           <div class="group" style="margin:0">
             ${settingRow({ slug: "cake", label: "Birthday", val: `${esc(me.birthdate || "")} · locked`, chev: false })}
             ${settingRow({ slug: "shield", label: "Age group", val: `${S.ageBand(me.age).label} · locked`, chev: false })}
@@ -1657,6 +1690,7 @@
           <div style="height:10px"></div>
         </div>`);
       $("#back").onclick = () => showTab("profile");
+      $("#styleRow").onclick = () => openStylePicker(() => { me.style = state.me.style; d.theme = state.me.theme; const v = $("#styleRow .val"); if (v) v.textContent = me.style.name; });
       const fromServer = (list) => { d.pics = list.map((p) => ({ url: p.url, ref: p.ref })); };
       wirePhotoGrid({
         room: () => S.MAX_PHOTOS - d.pics.length,

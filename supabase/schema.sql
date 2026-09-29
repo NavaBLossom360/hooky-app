@@ -776,6 +776,22 @@ language sql stable security definer set search_path = public as $$
   where p.id = any(ids) and can_view_photos_of(p.id::text)
 $$;
 
+-- ---------- Profile style ----------
+-- A cosmetic theme id (emoji.js THEMES) people pick on the Me tab. The owner
+-- writes it directly; others read it with the same rule as photos.
+alter table profiles add column if not exists theme text;
+alter table profiles drop constraint if exists profiles_theme_format;
+alter table profiles add constraint profiles_theme_format check (theme is null or theme ~ '^[a-z]{2,16}$');
+
+create or replace function themes_of(ids uuid[])
+returns table (id uuid, theme text)
+language sql stable security definer set search_path = public as $$
+  select p.id, p.theme from profiles p
+  where p.id = any(ids) and (p.id = auth.uid() or can_view_photos_of(p.id::text))
+$$;
+revoke all on function themes_of(uuid[]) from public, anon;
+grant execute on function themes_of(uuid[]) to authenticated;
+
 -- ---------- Live (random video chat) ----------
 -- People waiting for a stranger sit in roulette_queue; a pairing becomes a
 -- roulette_sessions row. Pairing follows exactly the rules of the deck: same

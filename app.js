@@ -182,7 +182,8 @@
         state.inCall = false;
         const kind = mode === "voice" ? "Voice call" : "Video call";
         if (seconds > 0) await store.addSystemMessage(m.id, `${kind} · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
-        if (reason !== "report") toast(seconds ? "Call ended" : "Couldn't connect");
+        if (reason === "no-connect") toast("Couldn't connect. If one of you is on mobile data, try Wi-Fi.", 3600);
+        else if (reason !== "report") toast(seconds ? "Call ended" : "Couldn't connect");
         if (state.chatId === m.id) openChat(m.id);
       },
       onReport: () => openReport(m.user, () => showTab("matches")),

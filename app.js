@@ -32,7 +32,7 @@
   const real = store.kind === "supabase";
 
   const SUPPORT_EMAIL = "support@example.com"; // change before shipping
-  const APP_VERSION = "2026.09.29-6"; // shown on the Me tab; bump with sw.js CACHE
+  const APP_VERSION = "2026.09.29-7"; // shown on the Me tab; bump with sw.js CACHE
   const state = { me: null, tab: "discover", draft: {}, step: 0, chatId: null, onlineOnly: false, inCall: false, ageCheck: null, leave: null };
   try { state.ageCheck = JSON.parse(sessionStorage.getItem("hooky.ageCheck")) || null; } catch {}
   try { state.terms = JSON.parse(sessionStorage.getItem("hooky.terms")) || null; } catch {}
@@ -1643,22 +1643,37 @@
     const me = state.me;
     let cur = me.style.id;
     const preview = (t) => `<div class="style-preview" style="background:${t.bg}">${t.stickers.map((s, i) => emo(s, [40, 32, 36][i], `ps${i}`)).join("")}${avatarHtml(Object.assign({}, me, { gradient: t.bg }), "lg")}<b>${esc(me.name || "You")}</b></div>`;
+    // Paid styles are shown to everyone (that's the point), but tapping one
+    // you don't have only previews it and offers the plan that unlocks it.
+    const can = (t) => E.themeAllowed(t, me.premium, me.tier);
+    const badge = (t) => t.tier && !can(t) ? `<i class="lock">${emo("crown", 14)}${t.tier === "max" ? "Max" : "Plus"}</i>` : "";
+    const PLAN = { plus: "Hooky+", max: "Hooky Max" };
     modal(`<div id="spv">${preview(me.style)}</div>
       <h2 class="center" style="margin-top:14px">Your profile style</h2>
       <p class="muted small center">Shows on your profile, your cards and your calls.</p>
-      <div class="style-grid" id="sgrid">${E.THEMES.map((t) => `<button class="style-tile ${t.id === cur ? "on" : ""}" data-theme="${t.id}" style="background:${t.bg}">${emo(t.stickers[0], 34)}<span>${esc(t.name)}</span></button>`).join("")}</div>
+      <div class="style-grid" id="sgrid">${E.THEMES.map((t) => `<button class="style-tile ${t.id === cur ? "on" : ""} ${can(t) ? "" : "locked"}" data-theme="${t.id}" style="background:${t.bg}">${badge(t)}${emo(t.stickers[0], 34)}<span>${esc(t.name)}</span></button>`).join("")}</div>
       <button class="btn lime" id="sdone">Done</button>`, () => {
-      $("#sdone").onclick = closeModal;
+      const done = $("#sdone");
+      const resetDone = () => { done.innerHTML = "Done"; done.onclick = closeModal; };
+      resetDone();
       $("#sgrid").onclick = async (e) => {
-        const b = e.target.closest("[data-theme]"); if (!b || b.dataset.theme === cur) return;
-        buzz(8);
+        const b = e.target.closest("[data-theme]"); if (!b) return;
         const t = E.THEMES.find((x) => x.id === b.dataset.theme);
+        buzz(8);
+        $("#spv").innerHTML = preview(t);
+        if (!can(t)) {
+          // Preview only: the saved style (and its tick) stays as it was.
+          done.innerHTML = `${emo("crown", 22)} Get ${PLAN[t.tier]} for ${esc(t.name)}`;
+          done.onclick = () => { closeModal(); renderPlus(); };
+          return;
+        }
+        resetDone();
+        if (t.id === cur) return;
         cur = t.id;
         document.querySelectorAll(".style-tile").forEach((x) => x.classList.toggle("on", x === b));
-        $("#spv").innerHTML = preview(t);
         // Redraw the screen behind the sheet too, so the change shows live.
         try { state.me = await store.saveTheme(t.id); if (after) after(); else paintMeTab(); }
-        catch (err) { toast("Couldn't save that style. Try again."); }
+        catch (err) { toast(/hooky/i.test(err.message) ? err.message : "Couldn't save that style. Try again."); }
       };
     });
   }

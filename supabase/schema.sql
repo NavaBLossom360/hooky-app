@@ -778,15 +778,53 @@ $$;
 
 -- ---------- Profile style ----------
 -- A cosmetic theme id (emoji.js THEMES) people pick on the Me tab. The owner
--- writes it directly; others read it with the same rule as photos.
+-- writes it directly; others read it with the same rule as photos. Some
+-- styles are paid: Hooky+ unlocks the "plus" ones, Max unlocks all.
 alter table profiles add column if not exists theme text;
 alter table profiles drop constraint if exists profiles_theme_format;
 alter table profiles add constraint profiles_theme_format check (theme is null or theme ~ '^[a-z]{2,16}$');
 
+-- Keep these lists in step with `tier` on THEMES in emoji.js.
+create or replace function theme_tier(t text) returns text
+language sql immutable set search_path = public as $$
+  select case
+    when t in ('galaxy', 'arcade', 'peach', 'mint') then 'plus'
+    when t in ('lava', 'rainbow', 'aurora', 'gold') then 'max'
+  end
+$$;
+
+create or replace function theme_allowed(t text, until timestamptz, tier text) returns boolean
+language sql stable set search_path = public as $$
+  select case theme_tier(t)
+    when 'plus' then coalesce(until > now(), false)
+    when 'max' then coalesce(until > now(), false) and tier = 'max'
+    else true
+  end
+$$;
+
+-- Runs after profiles_guard_trg (triggers fire in name order), so a client
+-- that tries to set its own premium fields in the same write has already
+-- had them put back.
+create or replace function profiles_theme_guard() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  if tg_op = 'UPDATE' and new.theme is not distinct from old.theme then return new; end if;
+  if not theme_allowed(new.theme, new.premium_until, new.premium_tier) then
+    raise exception 'That style needs %', case theme_tier(new.theme) when 'max' then 'Hooky Max' else 'Hooky+' end;
+  end if;
+  return new;
+end $$;
+drop trigger if exists profiles_theme_trg on profiles;
+create trigger profiles_theme_trg before insert or update on profiles
+  for each row execute function profiles_theme_guard();
+
+-- A paid style someone no longer pays for reads as null, so others see
+-- their default style again.
 create or replace function themes_of(ids uuid[])
 returns table (id uuid, theme text)
 language sql stable security definer set search_path = public as $$
-  select p.id, p.theme from profiles p
+  select p.id, case when theme_allowed(p.theme, p.premium_until, p.premium_tier) then p.theme end
+  from profiles p
   where p.id = any(ids) and (p.id = auth.uid() or can_view_photos_of(p.id::text))
 $$;
 revoke all on function themes_of(uuid[]) from public, anon;

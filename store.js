@@ -117,7 +117,13 @@
       if (!S.ageFitsEstimate(S.ageFromBirthdate(me.birthdate), ac.estimate)) throw new Error("birthday does not match age check");
       me.verification = "estimated"; me.verificationProvider = "on-device"; this.save();
     }
-    async saveTheme(id) { if (!this.db.me) return; this.db.me.theme = id; this.save(); return this.getMe(); }
+    // Mirrors the server's theme_tier() rule.
+    async saveTheme(id) {
+      if (!this.db.me) return;
+      const t = window.HookyEmoji.THEMES.find((x) => x.id === id);
+      if (!window.HookyEmoji.themeAllowed(t, this.db.premium, this.db.tier)) throw new Error(`That style needs ${t.tier === "max" ? "Hooky Max" : "Hooky+"}`);
+      this.db.me.theme = id; this.save(); return this.getMe();
+    }
     async setPremium(on, tier) { this.db.premium = !!on; this.db.tier = on ? (tier || "plus") : null; this.save(); }
     // ----- photos (demo stand-in for the photo-check function) -----
     // Up to four, stored as data URLs. The ref IS the URL here; on the real

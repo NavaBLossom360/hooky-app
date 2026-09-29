@@ -363,6 +363,8 @@ button.tag:active { transform: scale(.95); }
 .style-tile { position: relative; aspect-ratio: 1 / 1; border-radius: 20px; border: 3px solid transparent; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: #fff; font: 800 12px/1.1 var(--body, Inter, sans-serif); text-shadow: 0 1px 6px rgba(0,0,0,0.45); cursor: pointer; transition: transform .12s; }
 .style-tile:active { transform: scale(.95); }
 .style-tile.on { border-color: var(--lime); box-shadow: 0 0 0 3px rgba(200,255,79,0.25); }
+.style-tile .lock { position: absolute; top: 6px; left: 6px; display: inline-flex; align-items: center; gap: 3px; padding: 3px 7px 3px 4px; border-radius: 999px; background: rgba(0,0,0,0.55); color: #ffd93d; font: 800 10px/1 var(--body, Inter, sans-serif); font-style: normal; text-shadow: none; }
+.style-tile.locked > .emo, .style-tile.locked > span { opacity: .8; }
 .style-tile.on::after { content: "✓"; position: absolute; top: 6px; right: 8px; width: 20px; height: 20px; border-radius: 50%; background: var(--lime); color: #111; font-size: 12px; display: grid; place-items: center; text-shadow: none; }
 .me-hero > *:not(.bg) { position: relative; }
 .me-hero .avatar { margin: 0 auto 12px; box-shadow: 0 0 0 5px var(--bg), 0 16px 36px rgba(0,0,0,0.4); }

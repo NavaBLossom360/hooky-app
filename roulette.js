@@ -37,16 +37,35 @@
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       const e = new Error("This browser can't use the camera. Open Hooky in Safari or Chrome."); e.code = "no-camera"; throw e;
     }
-    try {
-      return await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
-      });
-    } catch (err) {
-      const e = new Error(err && err.name === "NotAllowedError"
-        ? "Camera and mic access are off. Allow them for this site, then try again."
-        : "We couldn't open your camera and mic."); e.code = "camera-denied"; throw e;
+    // Computers are pickier than phones: some webcams refuse the preferred
+    // settings, and plenty of desktops have a camera but no microphone. So
+    // step down from the ideal request to the plainest one, then to camera
+    // only, before giving up, and say exactly what went wrong.
+    const tries = [
+      { audio: { echoCancellation: true, noiseSuppression: true }, video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } },
+      { audio: true, video: true },
+      { audio: false, video: true },
+    ];
+    let last = null;
+    for (const c of tries) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia(c);
+        s.noMic = !c.audio;
+        return s;
+      } catch (err) {
+        last = err;
+        // A refusal won't change by asking again, and a second prompt is rude.
+        if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) break;
+      }
     }
+    const e = new Error(mediaErrorText(last)); e.code = "camera-denied"; e.detail = last && last.name; throw e;
+  }
+  function mediaErrorText(err) {
+    const n = (err && err.name) || "";
+    if (n === "NotAllowedError" || n === "SecurityError") return "Camera and mic access are off for this site. Click the camera icon or the lock in the address bar, allow both, then reload.";
+    if (n === "NotReadableError" || n === "TrackStartError" || n === "AbortError") return "Your camera is busy. Close anything else using it (another Hooky tab, Zoom, Teams, Discord, OBS, the Camera app), then try again.";
+    if (n === "NotFoundError" || n === "DevicesNotFoundError" || n === "OverconstrainedError") return "No camera found. Plug one in, or check it's allowed in your computer's privacy settings, then try again.";
+    return `We couldn't open your camera${n ? ` (${n})` : ""}. Reload and try again.`;
   }
 
   // ---------- guard ----------
@@ -190,5 +209,5 @@
     };
   }
 
-  window.HookyLive = { openMedia, loadGuard, watch, connect, GUARD };
+  window.HookyLive = { openMedia, mediaErrorText, loadGuard, watch, connect, GUARD };
 })();

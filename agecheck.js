@@ -68,12 +68,19 @@
       const e = new Error("This browser can't use the camera. Open Hooky in Safari or Chrome."); e.code = "no-camera"; throw e;
     }
     let stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } });
-    } catch (err) {
-      const e = new Error(err && err.name === "NotAllowedError"
-        ? "Camera access is off. Allow the camera for this site, then try again."
-        : "We couldn't open your camera."); e.code = "camera-denied"; throw e;
+    // Some webcams refuse the preferred size, so fall back to the plainest
+    // request before giving up, and say what actually went wrong.
+    let last = null;
+    for (const video of [{ facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, true]) {
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: false, video }); break; }
+      catch (err) { last = err; if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) break; }
+    }
+    if (!stream) {
+      const n = (last && last.name) || "";
+      const e = new Error(n === "NotAllowedError" || n === "SecurityError" ? "Camera access is off. Allow the camera for this site, then try again."
+        : n === "NotReadableError" || n === "AbortError" ? "Your camera is busy. Close anything else using it (another tab, Zoom, Teams, the Camera app), then try again."
+        : n === "NotFoundError" || n === "OverconstrainedError" ? "No camera found. Plug one in, or check it's allowed in your computer's privacy settings."
+        : `We couldn't open your camera${n ? ` (${n})` : ""}.`); e.code = "camera-denied"; throw e;
     }
     const track = stream.getVideoTracks()[0];
     const label = (track && track.label) || "";

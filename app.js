@@ -1300,9 +1300,18 @@
     setCover("loading");
     try {
       // The relay credentials are fetched now too, so the first pairing is quick.
-      const [stream, model] = await Promise.all([HookyLive.openMedia(), HookyLive.loadGuard(), store.iceServers()]);
-      if (!$("#stage")) { stream.getTracks().forEach((t) => t.stop()); return; }
-      L.stream = stream; L.model = model;
+      // allSettled, so a camera that opened is switched off again if the
+      // safety check fails to load, instead of leaving its light on.
+      const [sm, gm] = await Promise.allSettled([HookyLive.openMedia(), HookyLive.loadGuard(), store.iceServers()]);
+      const stream = sm.status === "fulfilled" ? sm.value : null;
+      if (sm.status === "rejected" || gm.status === "rejected" || !$("#stage")) {
+        stream && stream.getTracks().forEach((t) => t.stop());
+        if (sm.status === "rejected") throw sm.reason;
+        if (gm.status === "rejected") throw gm.reason;
+        return;
+      }
+      L.stream = stream; L.model = gm.value;
+      if (stream.noMic) toast("No microphone found: people will see you but can't hear you.", 3600);
     } catch (e) {
       stopLive(true); state.inCall = false;
       showTab("live");

@@ -68,16 +68,26 @@
     $("#cam") && ($("#cam").onclick = (e) => { if (!stream) return; const t = stream.getVideoTracks()[0]; if (!t) return; t.enabled = !t.enabled; e.currentTarget.classList.toggle("off", !t.enabled); });
 
     (async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(voice
-          ? { audio: true }
-          : { video: { facingMode: "user", width: { ideal: 640 } }, audio: true });
-        if (voice) localVideo.classList.add("hidden"); else localVideo.srcObject = stream;
-      } catch {
-        status.textContent = voice ? "Microphone blocked" : "Camera or mic blocked";
+      // Step down to plainer requests before giving up (some webcams refuse
+      // the preferred size), and for video let a camera-only or mic-only
+      // computer still join, since half a call beats none.
+      const tries = voice ? [{ audio: true }]
+        : [{ video: { facingMode: "user", width: { ideal: 640 } }, audio: true }, { video: true, audio: true }, { video: true, audio: false }, { video: false, audio: true }];
+      let lastErr = null;
+      for (const c of tries) {
+        try { stream = await navigator.mediaDevices.getUserMedia(c); break; }
+        catch (err) { lastErr = err; if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) break; }
+      }
+      if (stream) {
+        if (voice || !stream.getVideoTracks().length) localVideo.classList.add("hidden"); else localVideo.srcObject = stream;
+        if (!voice && !stream.getAudioTracks().length) status.textContent = "No mic found: they can't hear you";
+      } else {
+        const why = voice && lastErr && lastErr.name === "NotFoundError" ? "No microphone found"
+          : window.HookyLive && window.HookyLive.mediaErrorText ? window.HookyLive.mediaErrorText(lastErr) : "Camera or mic blocked";
+        status.textContent = why;
         localVideo.classList.add("hidden");
         if (store.kind === "local") setTimeout(connected, 800);
-        else { setTimeout(() => end("no-media"), 1500); return; }
+        else { setTimeout(() => end("no-media"), 5000); return; }
       }
 
       if (store.kind === "local") {

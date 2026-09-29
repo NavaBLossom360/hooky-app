@@ -66,34 +66,36 @@
       if (text) notes[key] = text; else delete notes[key];
       $("#notes").innerHTML = Object.values(notes).map((t) => `<div>${esc(t)}</div>`).join("");
     }
-    // Once connected, read the connection's own stats every two seconds:
-    // are their video frames arriving, is there any sound from them, and is
-    // this device's mic picking anything up. A silent mic is the classic
-    // computer problem (Windows set to the wrong input device).
+    // Once connected, read the connection's own stats twice a second: are
+    // their video frames arriving, is there any sound from them, and is this
+    // device's mic picking anything up. "Sound" means loud enough to be a
+    // voice, not just any signal: a desktop's empty mic jack still sends a
+    // faint hiss, which is how a computer with no real mic fooled this before.
+    const LOUD = 0.02, WINDOW = 16; // audioLevel 0..1; 16 samples = 8 seconds
     function watchHealth() {
       const first = Date.now();
-      let prev = null, quietThem = 0, quietMe = 0;
+      let lastFrames = 0, lastFrameAt = Date.now();
+      const them = [], me = [];
+      const push = (arr, v) => { arr.push(v); if (arr.length > WINDOW) arr.shift(); };
+      const silent = (arr) => arr.length >= WINDOW && Math.max(...arr) < LOUD;
       health = setInterval(async () => {
         if (!pc || ended) return;
-        let frames = 0, energyThem = 0, energyMe = 0, gotAudio = false, gotVideo = false;
+        let frames = 0, levelThem = 0, levelMe = 0, gotAudio = false, gotVideo = false;
         try {
           (await pc.getStats()).forEach((r) => {
             if (r.type === "inbound-rtp" && r.kind === "video") { gotVideo = true; frames += r.framesDecoded || 0; }
-            if (r.type === "inbound-rtp" && r.kind === "audio") { gotAudio = true; energyThem += r.totalAudioEnergy || 0; }
-            if (r.type === "media-source" && r.kind === "audio") energyMe += r.totalAudioEnergy || 0;
+            if (r.type === "inbound-rtp" && r.kind === "audio") { gotAudio = true; levelThem = Math.max(levelThem, r.audioLevel || 0); }
+            if (r.type === "media-source" && r.kind === "audio") levelMe = Math.max(levelMe, r.audioLevel || 0);
           });
         } catch { return; }
+        push(them, levelThem); push(me, levelMe);
+        if (frames !== lastFrames) { lastFrames = frames; lastFrameAt = Date.now(); }
         const warm = Date.now() - first > 5000;
-        if (prev) {
-          quietThem = energyThem - prev.energyThem < 1e-6 ? quietThem + 1 : 0;
-          quietMe = energyMe - prev.energyMe < 1e-6 ? quietMe + 1 : 0;
-        }
         const micOn = stream && stream.getAudioTracks().some((t) => t.enabled);
-        if (!voice) note("theirVideo", warm && (!gotVideo || frames === (prev ? prev.frames : 0)) ? `No video from ${other.name}: their camera may be off or blocked` : null);
-        note("theirSound", warm && (!gotAudio || quietThem >= 3) ? `No sound from ${other.name} yet. If they're talking, their mic may be muted or not working` : null);
-        note("mySound", warm && micOn && quietMe >= 3 ? "Your mic isn't picking anything up. If you're talking, check the microphone in your device's sound settings" : null);
-        prev = { frames, energyThem, energyMe };
-      }, 2000);
+        if (!voice) note("theirVideo", warm && (!gotVideo || Date.now() - lastFrameAt > 3000) ? `No video from ${other.name}: their camera may be off or blocked` : null);
+        note("theirSound", warm && (!gotAudio || silent(them)) ? `No sound from ${other.name} yet. If they're talking, their mic may be muted, missing or not working` : null);
+        note("mySound", warm && micOn && silent(me) ? "Your mic isn't picking anything up. If you're talking, check the microphone in your device's sound settings" : null);
+      }, 500);
     }
 
     function tick() {

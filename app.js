@@ -29,7 +29,7 @@
   const real = store.kind === "supabase";
 
   const SUPPORT_EMAIL = "support@example.com"; // change before shipping
-  const APP_VERSION = "2026.09.29-4"; // shown on the Me tab; bump with sw.js CACHE
+  const APP_VERSION = "2026.09.29-5"; // shown on the Me tab; bump with sw.js CACHE
   const state = { me: null, tab: "discover", draft: {}, step: 0, chatId: null, onlineOnly: false, inCall: false, ageCheck: null, leave: null };
   try { state.ageCheck = JSON.parse(sessionStorage.getItem("hooky.ageCheck")) || null; } catch {}
   try { state.terms = JSON.parse(sessionStorage.getItem("hooky.terms")) || null; } catch {}

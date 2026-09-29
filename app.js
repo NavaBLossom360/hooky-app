@@ -29,6 +29,7 @@
   const real = store.kind === "supabase";
 
   const SUPPORT_EMAIL = "support@example.com"; // change before shipping
+  const APP_VERSION = "2026.09.29-4"; // shown on the Me tab; bump with sw.js CACHE
   const state = { me: null, tab: "discover", draft: {}, step: 0, chatId: null, onlineOnly: false, inCall: false, ageCheck: null, leave: null };
   try { state.ageCheck = JSON.parse(sessionStorage.getItem("hooky.ageCheck")) || null; } catch {}
   try { state.terms = JSON.parse(sessionStorage.getItem("hooky.terms")) || null; } catch {}
@@ -139,7 +140,21 @@
     const splash = $("#splash");
     if (splash) { setTimeout(() => splash.classList.add("out"), 450); setTimeout(() => splash.remove(), 850); }
   }
-  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
+  if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+    // A new version takes over while this page still runs the old code. Swap
+    // to it right away if the app only just opened, otherwise the next time
+    // it comes back to the foreground, and never in the middle of a call.
+    const hadController = !!navigator.serviceWorker.controller, bootAt = Date.now();
+    let updateReady = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController) return;
+      if (Date.now() - bootAt < 8000 && !state.inCall) location.reload(); else updateReady = true;
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && updateReady && !state.inCall) location.reload();
+    });
+  }
 
   // Confirming an email or opening a reset link signs in asynchronously, so
   // redraw the moment the session flips.
@@ -1544,7 +1559,7 @@
         ${settingRow({ id: "signout", slug: "door", label: "Log out" })}
         ${settingRow({ id: "del", slug: "wastebasket", label: "Delete my account", danger: true })}
       </div>
-      <div class="foot-note">Hooky ${store.kind === "local" ? "demo" : ""} · Friends, not dating · 13 to 25<br>3D emoji by Microsoft Fluent Emoji (MIT)</div>`);
+      <div class="foot-note">Hooky ${store.kind === "local" ? "demo" : ""} · Friends, not dating · 13 to 25<br>Version ${APP_VERSION}<br>3D emoji by Microsoft Fluent Emoji (MIT)</div>`);
     $("#edit").onclick = () => renderSettings();
     $("#addPics") && ($("#addPics").onclick = () => renderSettings());
     $("#gShow").onclick = $("#gMe").onclick = () => renderSettings();

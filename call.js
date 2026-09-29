@@ -42,6 +42,7 @@
       <div class="call-top">
         <div class="call-name">${esc(other.name)}${voice ? " · voice" : ""}</div>
         <div class="call-status" id="status">Connecting…</div>
+        <div class="call-notes" id="notes"></div>
       </div>
       <div class="call-rules">${voice
         ? "Voice only · keep it appropriate · hang up any time"
@@ -56,7 +57,44 @@
 
     const $ = (s) => root.querySelector(s);
     const status = $("#status"), remoteVideo = $("#remoteVideo"), localVideo = $("#localVideo");
-    let stream = null, pc = null, ch = null, timer = null, startedAt = null, ended = false;
+    let stream = null, pc = null, ch = null, timer = null, startedAt = null, ended = false, health = null;
+
+    // Notes say plainly what's missing in the call (and on whose side), and
+    // stay put under the timer instead of being overwritten by it.
+    const notes = {};
+    function note(key, text) {
+      if (text) notes[key] = text; else delete notes[key];
+      $("#notes").innerHTML = Object.values(notes).map((t) => `<div>${esc(t)}</div>`).join("");
+    }
+    // Once connected, read the connection's own stats every two seconds:
+    // are their video frames arriving, is there any sound from them, and is
+    // this device's mic picking anything up. A silent mic is the classic
+    // computer problem (Windows set to the wrong input device).
+    function watchHealth() {
+      const first = Date.now();
+      let prev = null, quietThem = 0, quietMe = 0;
+      health = setInterval(async () => {
+        if (!pc || ended) return;
+        let frames = 0, energyThem = 0, energyMe = 0, gotAudio = false, gotVideo = false;
+        try {
+          (await pc.getStats()).forEach((r) => {
+            if (r.type === "inbound-rtp" && r.kind === "video") { gotVideo = true; frames += r.framesDecoded || 0; }
+            if (r.type === "inbound-rtp" && r.kind === "audio") { gotAudio = true; energyThem += r.totalAudioEnergy || 0; }
+            if (r.type === "media-source" && r.kind === "audio") energyMe += r.totalAudioEnergy || 0;
+          });
+        } catch { return; }
+        const warm = Date.now() - first > 5000;
+        if (prev) {
+          quietThem = energyThem - prev.energyThem < 1e-6 ? quietThem + 1 : 0;
+          quietMe = energyMe - prev.energyMe < 1e-6 ? quietMe + 1 : 0;
+        }
+        const micOn = stream && stream.getAudioTracks().some((t) => t.enabled);
+        if (!voice) note("theirVideo", warm && (!gotVideo || frames === (prev ? prev.frames : 0)) ? `No video from ${other.name}: their camera may be off or blocked` : null);
+        note("theirSound", warm && (!gotAudio || quietThem >= 3) ? `No sound from ${other.name} yet. If they're talking, their mic may be muted or not working` : null);
+        note("mySound", warm && micOn && quietMe >= 3 ? "Your mic isn't picking anything up. If you're talking, check the microphone in your device's sound settings" : null);
+        prev = { frames, energyThem, energyMe };
+      }, 2000);
+    }
 
     function tick() {
       const s = Math.floor((Date.now() - startedAt) / 1000);
@@ -65,11 +103,12 @@
     function connected() {
       if (startedAt) return;
       startedAt = Date.now(); tick(); timer = setInterval(tick, 1000);
+      if (pc) watchHealth();
       root.classList.add("live");
     }
     function end(reason) {
       if (ended) return; ended = true;
-      clearInterval(timer);
+      clearInterval(timer); clearInterval(health);
       stream && stream.getTracks().forEach((t) => t.stop());
       pc && pc.close();
       if (ch) { ch.send("end", {}); setTimeout(() => ch.close(), 300); }
@@ -96,7 +135,8 @@
       }
       if (stream) {
         if (voice || !stream.getVideoTracks().length) localVideo.classList.add("hidden"); else localVideo.srcObject = stream;
-        if (!voice && !stream.getAudioTracks().length) status.textContent = "No mic found: they can't hear you";
+        if (!stream.getAudioTracks().length) note("myMic", "No microphone found: they can't hear you");
+        if (!voice && !stream.getVideoTracks().length) note("myCam", `Your camera didn't start: they can't see you. ${window.HookyLive ? window.HookyLive.mediaErrorText(lastErr) : ""}`.trim());
       } else {
         const why = voice && lastErr && lastErr.name === "NotFoundError" ? "No microphone found"
           : window.HookyLive && window.HookyLive.mediaErrorText ? window.HookyLive.mediaErrorText(lastErr) : "Camera or mic blocked";

@@ -32,7 +32,12 @@
   const real = store.kind === "supabase";
 
   const SUPPORT_EMAIL = "support@example.com"; // change before shipping
-  const APP_VERSION = "2026.09.29-8"; // shown on the Me tab; bump with sw.js CACHE
+  const APP_VERSION = "2026.09.29-9"; // shown on the Me tab; bump with sw.js CACHE
+  // A visible "Redeem a code" row on the Me tab, for testing. Set to false
+  // before submitting to the App Store or Google Play: both reject apps with
+  // a visible way to unlock paid features outside their billing. (Tapping the
+  // version line 5 times still opens the code box either way.)
+  const SHOW_CODE_ROW = true;
   const state = { me: null, tab: "discover", draft: {}, step: 0, chatId: null, onlineOnly: false, inCall: false, ageCheck: null, leave: null };
   try { state.ageCheck = JSON.parse(sessionStorage.getItem("hooky.ageCheck")) || null; } catch {}
   try { state.terms = JSON.parse(sessionStorage.getItem("hooky.terms")) || null; } catch {}
@@ -1562,6 +1567,7 @@
         ${settingRow({ slug: "megaphone", label: "Contact support", href: `mailto:${SUPPORT_EMAIL}` })}
         ${settingRow({ slug: "books", label: "Terms, privacy and guidelines", href: "legal.html" })}
         ${settingRow({ id: "signout", slug: "door", label: "Log out" })}
+        ${SHOW_CODE_ROW ? settingRow({ id: "codeRow", slug: "key", label: "Redeem a code" }) : ""}
         ${settingRow({ id: "del", slug: "wastebasket", label: "Delete my account", danger: true })}
       </div>
       <div class="foot-note">Hooky ${store.kind === "local" ? "demo" : ""} · Friends, not dating · 13 to 25<br><span id="ver">Version ${APP_VERSION}</span><br>3D emoji by Microsoft Fluent Emoji (MIT)</div>`);
@@ -1601,6 +1607,7 @@
       };
     }));
     $("#signout").onclick = async () => { await store.signOut(); boot(); };
+    $("#codeRow") && ($("#codeRow").onclick = () => openCodeEntry());
     $("#del").onclick = () => modal(`${emo("wastebasket", 70, "sheet-sticker sticker")}<h2 class="center">Delete your account?</h2><p class="muted center">This removes your profile, catches and messages. It can't be undone.</p><button class="btn danger" id="yes">Delete everything</button><button class="btn dark" id="no">Cancel</button>`, () => { $("#no").onclick = closeModal; $("#yes").onclick = async () => { await store.deleteAccount(); closeModal(); boot(); }; });
   }
 

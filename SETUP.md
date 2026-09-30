@@ -274,7 +274,7 @@ features outside their own billing.
 Only a SHA-256 of each code is stored (`plan_codes`, unreadable by the app),
 each account can use a code once, and each account gets 10 tries an hour.
 The dev code is in `.secrets/dev-code.txt` (gitignored): Hooky Max for 10
-years, up to 20 accounts. To make another one, in the SQL editor:
+years, up to 5 accounts. To make another one, in the SQL editor:
 
 ```sql
 -- Codes are matched in uppercase with dashes and spaces ignored.

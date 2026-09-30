@@ -32,12 +32,7 @@
   const real = store.kind === "supabase";
 
   const SUPPORT_EMAIL = "support@example.com"; // change before shipping
-  const APP_VERSION = "2026.09.29-9"; // shown on the Me tab; bump with sw.js CACHE
-  // A visible "Redeem a code" row on the Me tab, for testing. Set to false
-  // before submitting to the App Store or Google Play: both reject apps with
-  // a visible way to unlock paid features outside their billing. (Tapping the
-  // version line 5 times still opens the code box either way.)
-  const SHOW_CODE_ROW = true;
+  const APP_VERSION = "2026.09.29-10"; // shown on the Me tab; bump with sw.js CACHE
   const state = { me: null, tab: "discover", draft: {}, step: 0, chatId: null, onlineOnly: false, inCall: false, ageCheck: null, leave: null };
   try { state.ageCheck = JSON.parse(sessionStorage.getItem("hooky.ageCheck")) || null; } catch {}
   try { state.terms = JSON.parse(sessionStorage.getItem("hooky.terms")) || null; } catch {}
@@ -1567,21 +1562,11 @@
         ${settingRow({ slug: "megaphone", label: "Contact support", href: `mailto:${SUPPORT_EMAIL}` })}
         ${settingRow({ slug: "books", label: "Terms, privacy and guidelines", href: "legal.html" })}
         ${settingRow({ id: "signout", slug: "door", label: "Log out" })}
-        ${SHOW_CODE_ROW ? settingRow({ id: "codeRow", slug: "key", label: "Redeem a code" }) : ""}
         ${settingRow({ id: "del", slug: "wastebasket", label: "Delete my account", danger: true })}
       </div>
-      <div class="foot-note">Hooky ${store.kind === "local" ? "demo" : ""} · Friends, not dating · 13 to 25<br><span id="ver">Version ${APP_VERSION}</span><br>3D emoji by Microsoft Fluent Emoji (MIT)</div>`);
+      <div class="foot-note">Hooky ${store.kind === "local" ? "demo" : ""} · Friends, not dating · 13 to 25<br>Version ${APP_VERSION}<br>3D emoji by Microsoft Fluent Emoji (MIT)</div>`);
     $("#edit").onclick = () => renderSettings();
     $("#styleBtn").onclick = () => openStylePicker(renderProfile);
-    // Hidden on purpose: tap the version line 5 times to enter a plan code
-    // (dev and test accounts). Store rules don't allow a visible code box
-    // that unlocks paid features outside their own billing.
-    let verTaps = 0, verTimer = null;
-    $("#ver").onclick = () => {
-      clearTimeout(verTimer); verTimer = setTimeout(() => { verTaps = 0; }, 1500);
-      if (++verTaps < 5) return;
-      verTaps = 0; openCodeEntry();
-    };
     $("#addPics") && ($("#addPics").onclick = () => renderSettings());
     $("#gShow").onclick = $("#gMe").onclick = () => renderSettings();
     $("#plusChip").onclick = () => renderPlus();
@@ -1607,7 +1592,6 @@
       };
     }));
     $("#signout").onclick = async () => { await store.signOut(); boot(); };
-    $("#codeRow") && ($("#codeRow").onclick = () => openCodeEntry());
     $("#del").onclick = () => modal(`${emo("wastebasket", 70, "sheet-sticker sticker")}<h2 class="center">Delete your account?</h2><p class="muted center">This removes your profile, catches and messages. It can't be undone.</p><button class="btn danger" id="yes">Delete everything</button><button class="btn dark" id="no">Cancel</button>`, () => { $("#no").onclick = closeModal; $("#yes").onclick = async () => { await store.deleteAccount(); closeModal(); boot(); }; });
   }
 
@@ -1651,31 +1635,6 @@
   }
 
   // ---------- edit profile ----------
-  // Everything editable lives here. Birthdate is deliberately absent: it is
-  // write-once, in the client and in the database.
-  function openCodeEntry() {
-    buzz(20);
-    modal(`${emo("key", 70, "sheet-sticker sticker")}<h2 class="center">Enter a code</h2>
-      <p class="muted small center">For Hooky team and test accounts.</p>
-      <input id="code" class="input" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="HOOKY-XXXX-XXXX-XXXX-XXXX" style="text-align:center;letter-spacing:.06em">
-      <div id="cerr" class="error center"></div>
-      <button class="btn lime" id="redeem">Redeem</button>`, () => {
-      const input = $("#code"), btn = $("#redeem");
-      input.focus();
-      input.onkeydown = (e) => { if (e.key === "Enter") btn.click(); };
-      btn.onclick = async () => {
-        const code = input.value.trim(); if (!code) return;
-        btn.disabled = true; $("#cerr").textContent = "";
-        try {
-          const r = await store.redeemCode(code);
-          state.me = r.me; closeModal(); renderProfile();
-          const until = new Date(r.until).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-          toast(`${r.tier === "max" ? "Hooky Max" : "Hooky+"} unlocked until ${until}`, 3600);
-        } catch (e) { $("#cerr").textContent = e.message; btn.disabled = false; }
-      };
-    });
-  }
-
   // Profile style picker. Saves the moment you tap one (it's only looks), and
   // previews it live at the top of the sheet.
   function openStylePicker(after) {
@@ -1717,6 +1676,8 @@
     });
   }
 
+  // Everything editable lives here. Birthdate is deliberately absent: it is
+  // write-once, in the client and in the database.
   async function renderSettings() {
     const me = state.me = await store.getMe();
     const d = Object.assign({ showMe: ALL_GENDERS.slice() }, me);

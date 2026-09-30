@@ -263,27 +263,18 @@ Verified against the live function: a wrong signature is rejected, an unknown
 user 404s, a replayed `event_id` is a no-op, and a repeated `expires_at` gives
 an identical result.
 
-### Plan codes (dev and test accounts)
+### Giving an account a plan by hand
 
-On the Me tab, tapping the "Version" line five times opens a hidden code box.
-A valid code grants a plan through `redeem_code()`, which runs on the server
-and is the only other thing besides the billing webhook that can set a plan.
-It's hidden because the app stores don't allow a visible way to unlock paid
-features outside their own billing.
-
-Only a SHA-256 of each code is stored (`plan_codes`, unreadable by the app),
-each account can use a code once, and each account gets 10 tries an hour.
-The dev code is in `.secrets/dev-code.txt` (gitignored): Hooky Max for 10
-years, up to 5 accounts. To make another one, in the SQL editor:
+For team accounts, there's no code box in the app: set the plan directly in
+the SQL editor, which runs as a trusted server write. The owner's two
+accounts (Nava and Nava2) have Hooky Max until 2036 this way.
 
 ```sql
--- Codes are matched in uppercase with dashes and spaces ignored.
-insert into plan_codes (code_hash, tier, days, max_uses, note)
-values (encode(extensions.digest('HOOKYFRIENDS2026', 'sha256'), 'hex'), 'plus', 30, 50, 'giveaway');
+update profiles p set premium_tier = 'max', premium_until = now() + interval '10 years'
+from auth.users u where u.id = p.id and u.email = 'someone@example.com';
 ```
 
-Use a long random code for anything that unlocks Max, and delete a row from
-`plan_codes` to switch that code off.
+Use `'plus'` for Hooky+, and set `premium_until = null` to take a plan away.
 
 ## Age verification
 

@@ -1,7 +1,7 @@
 // Hooky service worker: makes the app installable, lets the shell load offline,
 // and receives push notifications for new catches and messages.
 // Network first, cache fallback, so updates show up right away when online.
-const CACHE = "hooky-v19";
+const CACHE = "hooky-v20";
 // The age check (vendor/face-api, about 2 MB) and the Live safety check
 // (vendor/onnxruntime + vendor/nsfw, about 20 MB) are not precached; they are
 // cached the first time someone uses them.

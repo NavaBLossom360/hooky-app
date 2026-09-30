@@ -117,6 +117,7 @@
       if (!S.ageFitsEstimate(S.ageFromBirthdate(me.birthdate), ac.estimate)) throw new Error("birthday does not match age check");
       me.verification = "estimated"; me.verificationProvider = "on-device"; this.save();
     }
+    async redeemCode() { throw new Error("Codes only work with a real account. In the demo, use \"Demo: toggle Hooky+\" below."); }
     // Mirrors the server's theme_tier() rule.
     async saveTheme(id) {
       if (!this.db.me) return;
@@ -441,6 +442,14 @@
       const { error } = await this.sb.from("profiles").upsert(row);
       if (error) throw error;
       return this.getMe();
+    }
+    // Plan codes (dev and test accounts). The server checks and applies it.
+    async redeemCode(code) {
+      const { data, error } = await this.sb.rpc("redeem_code", { code });
+      if (error) throw error;
+      const r = (data || [])[0];
+      if (!r || !r.ok) throw new Error((r && r.message) || "That code isn't valid.");
+      return { tier: r.tier, until: r.until, me: await this.getMe() };
     }
     // Profile style: cosmetic, saved on its own the moment it's picked.
     async saveTheme(id) {

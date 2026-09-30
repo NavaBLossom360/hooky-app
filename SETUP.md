@@ -263,6 +263,28 @@ Verified against the live function: a wrong signature is rejected, an unknown
 user 404s, a replayed `event_id` is a no-op, and a repeated `expires_at` gives
 an identical result.
 
+### Plan codes (dev and test accounts)
+
+On the Me tab, tapping the "Version" line five times opens a hidden code box.
+A valid code grants a plan through `redeem_code()`, which runs on the server
+and is the only other thing besides the billing webhook that can set a plan.
+It's hidden because the app stores don't allow a visible way to unlock paid
+features outside their own billing.
+
+Only a SHA-256 of each code is stored (`plan_codes`, unreadable by the app),
+each account can use a code once, and each account gets 10 tries an hour.
+The dev code is in `.secrets/dev-code.txt` (gitignored): Hooky Max for 10
+years, up to 20 accounts. To make another one, in the SQL editor:
+
+```sql
+-- Codes are matched in uppercase with dashes and spaces ignored.
+insert into plan_codes (code_hash, tier, days, max_uses, note)
+values (encode(extensions.digest('HOOKYFRIENDS2026', 'sha256'), 'hex'), 'plus', 30, 50, 'giveaway');
+```
+
+Use a long random code for anything that unlocks Max, and delete a row from
+`plan_codes` to switch that code off.
+
 ## Age verification
 
 ### At signup, on the device
